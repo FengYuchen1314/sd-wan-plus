@@ -39,6 +39,18 @@ export const api = {
     request(`/api/nodes/${id}/addresses`, { method: 'POST', body: JSON.stringify(body) }),
 
   topology: () => request<any>('/api/topology'),
+  topologyPaths: (from: string, to: string) =>
+    request<{ paths: string[][] }>(`/api/topology/paths?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`),
+  listOverlayPaths: (from?: string, to?: string) => {
+    const q = from && to
+      ? `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+      : ''
+    return request<{ paths: any[] }>(`/api/overlay-paths${q}`)
+  },
+  createOverlayPath: (body: { src_node_id: string; dst_node_id: string; hops: string[] }) =>
+    request('/api/overlay-paths', { method: 'POST', body: JSON.stringify(body) }),
+  deleteOverlayPath: (id: string) =>
+    request(`/api/overlay-paths/${id}`, { method: 'DELETE' }),
   links: () => request<any[]>('/api/links'),
   createLink: (body: any) => request('/api/links', { method: 'POST', body: JSON.stringify(body) }),
   updateLink: (id: string, body: any) => request(`/api/links/${id}`, { method: 'PUT', body: JSON.stringify(body) }),

@@ -163,11 +163,16 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/policies/{id}", s.handleGetPolicy)
 		r.Delete("/api/policies/{id}", s.handleDeletePolicy)
 
+		r.Get("/api/overlay-paths", s.handleListOverlayPaths)
+		r.Post("/api/overlay-paths", s.handleCreateOverlayPath)
+		r.Delete("/api/overlay-paths/{id}", s.handleDeleteOverlayPath)
+
 		r.Get("/api/enrollment/tokens", s.handleListTokens)
 		r.Post("/api/enrollment/tokens", s.handleCreateToken)
 		r.Post("/api/enrollment/tokens/{id}/revoke", s.handleRevokeToken)
 
 		r.Get("/api/topology", s.handleTopology)
+		r.Get("/api/topology/paths", s.handleTopologyPaths)
 		r.Get("/api/config/preview", s.handleConfigPreview)
 		r.Post("/api/config/publish", s.handleConfigPublish)
 		r.Get("/api/config/revisions", s.handleListRevisions)

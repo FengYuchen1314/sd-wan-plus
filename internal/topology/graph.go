@@ -138,3 +138,64 @@ func NextHop(links []core.WireGuardLink, src, dst string) (NextHopResult, bool) 
 	}
 	return NextHopResult{}, false
 }
+
+// SimplePaths enumerates simple (acyclic) paths from src to dst over enabled WG links.
+func SimplePaths(links []core.WireGuardLink, src, dst string, maxHops, maxPaths int) [][]string {
+	if src == "" || dst == "" || src == dst {
+		return nil
+	}
+	if maxHops <= 0 {
+		maxHops = 8
+	}
+	if maxPaths <= 0 {
+		maxPaths = 64
+	}
+	adj := EnabledAdj(links)
+	var out [][]string
+	var walk func(cur string, path []string, seen map[string]bool)
+	walk = func(cur string, path []string, seen map[string]bool) {
+		if len(out) >= maxPaths {
+			return
+		}
+		if cur == dst {
+			cp := make([]string, len(path))
+			copy(cp, path)
+			out = append(out, cp)
+			return
+		}
+		if len(path)-1 >= maxHops {
+			return
+		}
+		for _, n := range adj[cur] {
+			if seen[n.NodeID] {
+				continue
+			}
+			seen[n.NodeID] = true
+			walk(n.NodeID, append(path, n.NodeID), seen)
+			delete(seen, n.NodeID)
+			if len(out) >= maxPaths {
+				return
+			}
+		}
+	}
+	seen := map[string]bool{src: true}
+	walk(src, []string{src}, seen)
+	return out
+}
+
+// LinkToward returns local iface and link id from node `from` toward neighbor `to`.
+func LinkToward(links []core.WireGuardLink, from, to string) (iface, linkID string, ok bool) {
+	for _, l := range links {
+		if !l.Enabled {
+			continue
+		}
+		if l.NodeA == from && l.NodeB == to {
+			return l.InterfaceNameA, l.ID, true
+		}
+		if l.NodeB == from && l.NodeA == to {
+			return l.InterfaceNameB, l.ID, true
+		}
+	}
+	return "", "", false
+}
+
