@@ -14,7 +14,6 @@ const router = createRouter({
         { path: 'topology', name: 'topology', component: () => import('../views/TopologyView.vue') },
         { path: 'enrollment', name: 'enrollment', component: () => import('../views/EnrollmentView.vue') },
         { path: 'links', name: 'links', component: () => import('../views/LinksView.vue') },
-        { path: 'policies', name: 'policies', component: () => import('../views/PoliciesView.vue') },
         { path: 'publish', name: 'publish', component: () => import('../views/PublishView.vue') },
         { path: 'updates', name: 'updates', component: () => import('../views/UpdatesView.vue') },
         { path: 'settings', name: 'settings', component: () => import('../views/SettingsView.vue') },

@@ -669,7 +669,6 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	nodes, _ := s.db.ListNodes()
 	links, _ := s.db.ListLinks()
-	policies, _ := s.db.ListPolicies()
 	online := 0
 	now := time.Now()
 	for _, n := range nodes {
@@ -685,7 +684,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"node_total": len(nodes), "agent_online": online, "overlay_reachable": online,
-		"link_total": len(links), "link_failed": failedLinks, "policy_total": len(policies),
+		"link_total": len(links), "link_failed": failedLinks,
 		"version": core.ProductVersion,
 	})
 }

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"sort"
+	"strings"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/netutil"
@@ -11,15 +13,13 @@ import (
 	"github.com/FengYuchen1314/sd-wan-plus/internal/topology"
 )
 
-// Compile builds per-node DesiredState from topology + policies.
+// Compile builds per-node DesiredState from the WireGuard graph.
+// Overlay reachability: shortest-path next-hop over enabled links (AllowedIPs + host routes).
+// Does not create new WireGuard links.
 func Compile(db *storage.DB, generation uint64, box interface {
 	Decrypt(string) (string, error)
 }) (map[string]*core.NodeDesiredState, error) {
 	g, err := topology.Build(db)
-	if err != nil {
-		return nil, err
-	}
-	policies, err := db.ListPolicies()
 	if err != nil {
 		return nil, err
 	}
@@ -33,7 +33,6 @@ func Compile(db *storage.DB, generation uint64, box interface {
 	for _, n := range g.Nodes {
 		priv, err := box.Decrypt(n.WGPrivateKeyEncrypted)
 		if err != nil {
-			// 旧节点可能存了空/损坏密钥；跳过解密错误，agent 可用本地 wg_private.key 补齐
 			log.Printf("compile: decrypt wg key for %s: %v (using empty; agent may inject local key)", n.ID, err)
 			priv = ""
 		}
@@ -51,6 +50,7 @@ func Compile(db *storage.DB, generation uint64, box interface {
 			ControlParentID:    parent,
 		}
 
+		linkIdx := map[string]int{} // linkID -> index in st.WireGuardLinks
 		for _, l := range g.Links {
 			if !l.Enabled && l.Status != core.LinkPending {
 				continue
@@ -75,7 +75,6 @@ func Compile(db *storage.DB, generation uint64, box interface {
 				OverlayIP:      n.OverlayIPv4,
 				PeerOverlayIP:  peer.OverlayIPv4,
 			}
-			// Prefer per-node endpoint rows (one-way by default; bidirectional when flagged)
 			if eps, err := db.ListLinkEndpoints(l.ID); err == nil {
 				for _, ep := range eps {
 					if ep.NodeID != n.ID {
@@ -95,7 +94,6 @@ func Compile(db *storage.DB, generation uint64, box interface {
 						if h, _, err := net.SplitHostPort(*ep.PeerEndpoint); err == nil {
 							host = h
 						}
-						// Drop private reverse endpoints so wireguard-go can learn NAT mapping from handshake.
 						if netutil.IsPublicDialable(host) || ep.IsInitiator {
 							cfg.PeerEndpoint = *ep.PeerEndpoint
 						}
@@ -115,93 +113,33 @@ func Compile(db *storage.DB, generation uint64, box interface {
 			if cfg.PersistentKeepalive == 0 && cfg.PeerEndpoint != "" {
 				cfg.PersistentKeepalive = 25
 			}
+			if peer.OverlayIPv4 != "" {
+				cfg.AllowedIPs = append(cfg.AllowedIPs, ensureHostCIDR(peer.OverlayIPv4))
+			}
+			linkIdx[l.ID] = len(st.WireGuardLinks)
 			st.WireGuardLinks = append(st.WireGuardLinks, cfg)
 		}
 
-		// Policy compilation: fwmark + route tables per hop
-		fwBase := uint32(100)
-		tableBase := uint32(1000)
-		for pi, p := range policies {
-			if !p.Enabled {
+		// Overlay multi-hop: every reachable remote overlay IP via shortest-path next hop.
+		for _, m := range g.Nodes {
+			if m.ID == n.ID || m.OverlayIPv4 == "" {
 				continue
 			}
-			hops, err := db.ListPolicyHops(p.ID)
-			if err != nil {
-				return nil, err
-			}
-			matches, err := db.ListPolicyMatches(p.ID)
-			if err != nil {
-				return nil, err
-			}
-			hopIDs := make([]string, len(hops))
-			for i, h := range hops {
-				hopIDs[i] = h.NodeID
-			}
-			if err := topology.ValidatePath(g.Links, hopIDs); err != nil {
-				return nil, err
-			}
-			// find this node's position
-			idx := -1
-			for i, id := range hopIDs {
-				if id == n.ID {
-					idx = i
-					break
-				}
-			}
-			if idx < 0 || idx == len(hopIDs)-1 {
-				// egress NAT on last hop
-				if idx == len(hopIDs)-1 {
-					cfg, _ := db.GetPolicyConfig(p.ID)
-					if cfg != nil && cfg.EgressNAT {
-						st.NatRules = append(st.NatRules, core.NatRuleCfg{
-							RuleType: "masquerade", Source: "0.0.0.0/0", OutInterface: "eth0",
-						})
-					}
-				}
+			hop, ok := topology.NextHop(g.Links, n.ID, m.ID)
+			if !ok {
 				continue
 			}
-			next := hopIDs[idx+1]
-			// find link iface to next
-			var nextIface string
-			for _, l := range g.Links {
-				if (l.NodeA == n.ID && l.NodeB == next) || (l.NodeB == n.ID && l.NodeA == next) {
-					if n.ID == l.NodeA {
-						nextIface = l.InterfaceNameA
-					} else {
-						nextIface = l.InterfaceNameB
-					}
-					break
-				}
-			}
-			if nextIface == "" {
+			idx, ok := linkIdx[hop.LinkID]
+			if !ok {
 				continue
 			}
-			mark := fwBase + uint32(pi)
-			table := tableBase + uint32(pi)
-			for _, m := range matches {
-				src := ""
-				dst := ""
-				if m.SourceCIDR != nil {
-					src = *m.SourceCIDR
-				}
-				if m.DestinationCIDR != nil {
-					dst = *m.DestinationCIDR
-				}
-				proto := m.Protocol
-				var dport uint32
-				if m.DestinationPortStart != nil {
-					dport = uint32(*m.DestinationPortStart)
-				}
-				st.NftablesRules = append(st.NftablesRules, core.NftablesRule{
-					Table: "pathweaver", Chain: "mangle", MatchSrc: src, MatchDst: dst,
-					Protocol: proto, Dport: dport, Fwmark: mark, Action: "mark",
-				})
-			}
-			st.PolicyRules = append(st.PolicyRules, core.PolicyRule{Priority: uint32(p.Priority), Fwmark: mark, TableID: table})
-			st.RouteTables = append(st.RouteTables, core.RouteTableCfg{
-				TableID: table,
-				Routes:  []core.RouteCfg{{Destination: "0.0.0.0/0", Dev: nextIface}},
-			})
+			cidr := ensureHostCIDR(m.OverlayIPv4)
+			st.WireGuardLinks[idx].AllowedIPs = appendUniqueCIDR(st.WireGuardLinks[idx].AllowedIPs, cidr)
+			st.RouteTables = appendOverlayRoute(st.RouteTables, cidr, hop.Iface, n.OverlayIPv4)
+		}
+
+		for i := range st.WireGuardLinks {
+			sort.Strings(st.WireGuardLinks[i].AllowedIPs)
 		}
 
 		if err := st.Seal(); err != nil {
@@ -210,4 +148,50 @@ func Compile(db *storage.DB, generation uint64, box interface {
 		out[n.ID] = st
 	}
 	return out, nil
+}
+
+func ensureHostCIDR(ip string) string {
+	ip = strings.TrimSpace(ip)
+	if ip == "" {
+		return ""
+	}
+	if strings.Contains(ip, "/") {
+		return ip
+	}
+	return ip + "/32"
+}
+
+func appendUniqueCIDR(list []string, cidr string) []string {
+	if cidr == "" {
+		return list
+	}
+	for _, x := range list {
+		if x == cidr {
+			return list
+		}
+	}
+	return append(list, cidr)
+}
+
+// appendOverlayRoute stores host routes in table 0 (main) as a single RouteTableCfg with TableID 254
+// is awkward; use TableID 0 to mean main table for netd.
+func appendOverlayRoute(tables []core.RouteTableCfg, dest, iface, src string) []core.RouteTableCfg {
+	const mainTable = 0
+	rt := core.RouteCfg{Destination: dest, Dev: iface}
+	_ = src // src applied by netd from overlay identity
+	for i := range tables {
+		if tables[i].TableID == mainTable {
+			for _, r := range tables[i].Routes {
+				if r.Destination == dest {
+					return tables
+				}
+			}
+			tables[i].Routes = append(tables[i].Routes, rt)
+			return tables
+		}
+	}
+	return append(tables, core.RouteTableCfg{
+		TableID: mainTable,
+		Routes:  []core.RouteCfg{rt},
+	})
 }

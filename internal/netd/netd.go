@@ -161,14 +161,25 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 			continue
 		}
 		_ = run("ip", "link", "set", l.InterfaceName, "up")
-		// Overlay IP lives on pw-lo; force src so ICMP/TCP use overlay, not underlay eth0.
-		if l.PeerOverlayIP != "" {
-			args := []string{"route", "replace", l.PeerOverlayIP + "/32", "dev", l.InterfaceName}
+		// Host routes for every AllowedIP (peer + transit overlay destinations).
+		ips := l.AllowedIPs
+		if len(ips) == 0 && l.PeerOverlayIP != "" {
+			ips = []string{l.PeerOverlayIP + "/32"}
+		}
+		for _, dest := range ips {
+			dest = strings.TrimSpace(dest)
+			if dest == "" {
+				continue
+			}
+			if !strings.Contains(dest, "/") {
+				dest += "/32"
+			}
+			args := []string{"route", "replace", dest, "dev", l.InterfaceName}
 			if st.OverlayIdentity.IPv4 != "" {
 				args = append(args, "src", st.OverlayIdentity.IPv4)
 			}
 			if err := run("ip", args...); err != nil {
-				log.Printf("netd: route %s via %s: %v", l.PeerOverlayIP, l.InterfaceName, err)
+				log.Printf("netd: route %s via %s: %v", dest, l.InterfaceName, err)
 			}
 		}
 	}
@@ -181,6 +192,10 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 		_ = run("ip", "rule", "add", "fwmark", fmt.Sprintf("%d", r.Fwmark), "table", fmt.Sprintf("%d", r.TableID), "priority", fmt.Sprintf("%d", r.Priority+100))
 	}
 	for _, t := range st.RouteTables {
+		if t.TableID == 0 {
+			// Main-table overlay routes already installed from AllowedIPs above.
+			continue
+		}
 		for _, rt := range t.Routes {
 			args := []string{"route", "replace", rt.Destination, "table", fmt.Sprintf("%d", t.TableID)}
 			if rt.Dev != "" {

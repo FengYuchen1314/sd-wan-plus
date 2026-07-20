@@ -31,16 +31,17 @@ type OverlayIdentity struct {
 }
 
 type WireGuardLinkCfg struct {
-	LinkID              string `json:"link_id"`
-	InterfaceName       string `json:"interface_name"`
-	ListenPort          uint32 `json:"listen_port"`
-	PeerPublicKey       string `json:"peer_public_key"`
-	PeerEndpoint        string `json:"peer_endpoint,omitempty"`
-	PersistentKeepalive uint32 `json:"persistent_keepalive"`
-	IsInitiator         bool   `json:"is_initiator"`
-	NodePrivateKey      string `json:"node_private_key,omitempty"`
-	OverlayIP           string `json:"overlay_ip"`
-	PeerOverlayIP       string `json:"peer_overlay_ip"`
+	LinkID              string   `json:"link_id"`
+	InterfaceName       string   `json:"interface_name"`
+	ListenPort          uint32   `json:"listen_port"`
+	PeerPublicKey       string   `json:"peer_public_key"`
+	PeerEndpoint        string   `json:"peer_endpoint,omitempty"`
+	PersistentKeepalive uint32   `json:"persistent_keepalive"`
+	IsInitiator         bool     `json:"is_initiator"`
+	NodePrivateKey      string   `json:"node_private_key,omitempty"`
+	OverlayIP           string   `json:"overlay_ip"`
+	PeerOverlayIP       string   `json:"peer_overlay_ip"`
+	AllowedIPs          []string `json:"allowed_ips,omitempty"` // overlay destinations via this peer (/32)
 }
 
 type PeerCfg struct {

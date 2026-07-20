@@ -42,3 +42,13 @@ PathWeaver 每条逻辑链路使用**独立 WireGuard 接口**（userspace **wir
 主动端通过 `PersistentKeepalive` 维持映射，使被动端持续能看到最新来源地址。
 
 数据面仍是双向的；“单向”仅指**谁发起握手**。
+
+## Overlay 自动互通（沿已有 WG 链路）
+
+发布配置后，主控按**已启用 WireGuard 链路图**做最短路径，为每个节点编译：
+
+- 各 peer 的 **AllowedIPs**：邻接 peer overlay + 经该 peer 可达的所有远端 overlay `/32`
+- 主机路由：远端 overlay `/32` → 下一跳 `pwl-*` 接口
+- 中间节点开启 `ip_forward`
+
+因此 A—B—C 链式入网后，C 可经 B 访问 A，**不会**自动创建 C—A 的 WireGuard 链路。手动「建立链路」只用于需要**新邻接**时（例如内网主动连另一台公网）。

@@ -144,8 +144,21 @@ func buildUAPI(l core.WireGuardLinkCfg) (string, error) {
 	}
 	b.WriteString("replace_peers=true\n")
 	fmt.Fprintf(&b, "public_key=%s\n", pub)
-	if l.PeerOverlayIP != "" {
-		fmt.Fprintf(&b, "allowed_ip=%s/32\n", strings.TrimSpace(l.PeerOverlayIP))
+	ips := l.AllowedIPs
+	if len(ips) == 0 && l.PeerOverlayIP != "" {
+		ips = []string{strings.TrimSpace(l.PeerOverlayIP) + "/32"}
+	}
+	seen := map[string]bool{}
+	for _, ip := range ips {
+		ip = strings.TrimSpace(ip)
+		if ip == "" || seen[ip] {
+			continue
+		}
+		if !strings.Contains(ip, "/") {
+			ip += "/32"
+		}
+		seen[ip] = true
+		fmt.Fprintf(&b, "allowed_ip=%s\n", ip)
 	}
 	endpoint := strings.TrimSpace(l.PeerEndpoint)
 	if endpoint != "" {

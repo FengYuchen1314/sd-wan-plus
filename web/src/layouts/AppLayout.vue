@@ -15,7 +15,6 @@ const nav = [
   { to: '/nodes', label: '节点' },
   { to: '/enrollment', label: '接入' },
   { to: '/links', label: '链路' },
-  { to: '/policies', label: '路径策略' },
   { to: '/publish', label: '配置发布' },
   { to: '/updates', label: '更新中心' },
   { to: '/settings', label: '设置' },

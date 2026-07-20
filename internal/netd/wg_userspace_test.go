@@ -64,6 +64,30 @@ func TestBuildUAPIListener(t *testing.T) {
 	}
 }
 
+func TestBuildUAPIAllowedIPs(t *testing.T) {
+	priv, _, err := security.GenerateWGKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, peerPub, err := security.GenerateWGKeyPair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	uapi, err := buildUAPI(core.WireGuardLinkCfg{
+		LinkID: "l3", InterfaceName: "pwl-l3", IsInitiator: true,
+		NodePrivateKey: priv, PeerPublicKey: peerPub,
+		PeerEndpoint: "1.2.3.4:14303", PeerOverlayIP: "10.250.0.2",
+		AllowedIPs: []string{"10.250.0.2/32", "10.250.0.3/32"},
+		PersistentKeepalive: 25,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(uapi, "allowed_ip=10.250.0.2/32") || !strings.Contains(uapi, "allowed_ip=10.250.0.3/32") {
+		t.Fatalf("want both allowed_ips:\n%s", uapi)
+	}
+}
+
 func TestKeyToHexRejectsBad(t *testing.T) {
 	if _, err := keyToHex("not-base64!!"); err == nil {
 		t.Fatal("expected error")

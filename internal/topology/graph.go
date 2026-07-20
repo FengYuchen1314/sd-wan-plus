@@ -9,10 +9,10 @@ import (
 
 // Graph holds control-tree and WireGuard data-graph separately.
 type Graph struct {
-	Nodes      []core.Node              `json:"nodes"`
-	Control    []core.ControlRelation   `json:"control_relations"`
-	Links      []core.WireGuardLink     `json:"links"`
-	Addresses  map[string][]core.NodeAddress `json:"addresses"`
+	Nodes     []core.Node                   `json:"nodes"`
+	Control   []core.ControlRelation        `json:"control_relations"`
+	Links     []core.WireGuardLink          `json:"links"`
+	Addresses map[string][]core.NodeAddress `json:"addresses"`
 }
 
 func Build(db *storage.DB) (*Graph, error) {
@@ -69,4 +69,72 @@ func ValidatePath(links []core.WireGuardLink, hops []string) error {
 		}
 	}
 	return nil
+}
+
+// Neighbor is an adjacent node on an enabled WireGuard link.
+type Neighbor struct {
+	NodeID string
+	LinkID string
+	Iface  string // local interface name toward neighbor
+}
+
+// EnabledAdj builds adjacency from enabled WireGuard links.
+func EnabledAdj(links []core.WireGuardLink) map[string][]Neighbor {
+	adj := map[string][]Neighbor{}
+	for _, l := range links {
+		if !l.Enabled {
+			continue
+		}
+		adj[l.NodeA] = append(adj[l.NodeA], Neighbor{
+			NodeID: l.NodeB, LinkID: l.ID, Iface: l.InterfaceNameA,
+		})
+		adj[l.NodeB] = append(adj[l.NodeB], Neighbor{
+			NodeID: l.NodeA, LinkID: l.ID, Iface: l.InterfaceNameB,
+		})
+	}
+	return adj
+}
+
+// NextHopResult is the first hop from src toward dst on the WG graph.
+type NextHopResult struct {
+	PeerID string
+	Iface  string
+	LinkID string
+}
+
+// NextHop returns the BFS shortest-path next hop from src to dst over enabled links.
+func NextHop(links []core.WireGuardLink, src, dst string) (NextHopResult, bool) {
+	if src == "" || dst == "" || src == dst {
+		return NextHopResult{}, false
+	}
+	adj := EnabledAdj(links)
+	type item struct {
+		node string
+		hop  NextHopResult // first hop from src
+	}
+	seen := map[string]bool{src: true}
+	q := make([]item, 0)
+	for _, n := range adj[src] {
+		first := NextHopResult{PeerID: n.NodeID, Iface: n.Iface, LinkID: n.LinkID}
+		if n.NodeID == dst {
+			return first, true
+		}
+		seen[n.NodeID] = true
+		q = append(q, item{node: n.NodeID, hop: first})
+	}
+	for len(q) > 0 {
+		cur := q[0]
+		q = q[1:]
+		for _, n := range adj[cur.node] {
+			if seen[n.NodeID] {
+				continue
+			}
+			seen[n.NodeID] = true
+			if n.NodeID == dst {
+				return cur.hop, true
+			}
+			q = append(q, item{node: n.NodeID, hop: cur.hop})
+		}
+	}
+	return NextHopResult{}, false
 }

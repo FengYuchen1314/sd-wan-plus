@@ -32,7 +32,6 @@ onUnmounted(() => ws?.close())
       <div class="card"><div class="stat-value">{{ data.overlay_reachable ?? '—' }}</div><div class="stat-label">Overlay 可达</div></div>
       <div class="card"><div class="stat-value">{{ data.link_total ?? '—' }}</div><div class="stat-label">WireGuard 链路</div></div>
       <div class="card"><div class="stat-value">{{ data.link_failed ?? '—' }}</div><div class="stat-label">失败链路</div></div>
-      <div class="card"><div class="stat-value">{{ data.policy_total ?? '—' }}</div><div class="stat-label">路径策略</div></div>
       <div class="card"><div class="stat-value mono" style="font-size:1.1rem">{{ data.version ?? '—' }}</div><div class="stat-label">软件版本</div></div>
     </div>
   </div>

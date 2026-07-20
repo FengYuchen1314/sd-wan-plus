@@ -44,11 +44,6 @@ export const api = {
   updateLink: (id: string, body: any) => request(`/api/links/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
   deleteLink: (id: string) => request(`/api/links/${id}`, { method: 'DELETE' }),
 
-  policies: () => request<any[]>('/api/policies'),
-  getPolicy: (id: string) => request<any>(`/api/policies/${id}`),
-  createPolicy: (body: any) => request('/api/policies', { method: 'POST', body: JSON.stringify(body) }),
-  deletePolicy: (id: string) => request(`/api/policies/${id}`, { method: 'DELETE' }),
-
   tokens: () => request<any[]>('/api/enrollment/tokens'),
   createToken: (body: any) => request('/api/enrollment/tokens', { method: 'POST', body: JSON.stringify(body) }),
   revokeToken: (id: string) => request(`/api/enrollment/tokens/${id}/revoke`, { method: 'POST' }),
