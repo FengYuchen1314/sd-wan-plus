@@ -2,6 +2,7 @@
 target/
 debug/
 *.rs.bk
+protoc.exe
 
 # Node
 node_modules/
