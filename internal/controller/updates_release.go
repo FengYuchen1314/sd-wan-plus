@@ -142,37 +142,25 @@ func (s *Server) fetchGitHubLatestUncached() (*latestReleaseInfo, error) {
 	goarch := runtime.GOARCH
 	stable := fmt.Sprintf("pathweaver-linux-%s.tar.gz", goarch)
 	var downloadURL, assetName string
-	version := ""
-	// Date+time versions: pathweaver-2026.07.20-1511-linux-amd64.tar.gz (same-day builds distinguishable)
-	verRe := regexp.MustCompile(`pathweaver-(\d{4}\.\d{2}\.\d{2}(?:-\d{4})?)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
-	legacyVerRe := regexp.MustCompile(`pathweaver-(.+)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
-	commit := ""
-	if m := regexp.MustCompile(`(?i)Commit:\s*([0-9a-f]{7,40})`).FindStringSubmatch(rel.Body); len(m) == 2 {
-		commit = m[1]
-	}
+	names := make([]string, 0, len(rel.Assets))
 	for _, a := range rel.Assets {
+		names = append(names, a.Name)
 		if a.Name == stable {
 			downloadURL = a.BrowserDownloadURL
 			assetName = a.Name
 		}
-		if m := verRe.FindStringSubmatch(a.Name); len(m) == 2 {
-			if m[1] > version {
-				version = m[1]
-				if downloadURL == "" {
-					downloadURL = a.BrowserDownloadURL
-					assetName = a.Name
-				}
-			}
-		}
 	}
-	if version == "" {
+	commit := ""
+	if m := regexp.MustCompile(`(?i)Commit:\s*([0-9a-f]{7,40})`).FindStringSubmatch(rel.Body); len(m) == 2 {
+		commit = m[1]
+	}
+	version := pickReleaseVersion(names, goarch, rel.Body, time.Now().UTC())
+	if downloadURL == "" {
+		want := fmt.Sprintf("pathweaver-%s-linux-%s.tar.gz", version, goarch)
 		for _, a := range rel.Assets {
-			if m := legacyVerRe.FindStringSubmatch(a.Name); len(m) == 2 && !strings.HasPrefix(m[1], "linux") {
-				version = m[1]
-				if downloadURL == "" {
-					downloadURL = a.BrowserDownloadURL
-					assetName = a.Name
-				}
+			if a.Name == want {
+				downloadURL = a.BrowserDownloadURL
+				assetName = a.Name
 				break
 			}
 		}
@@ -180,12 +168,9 @@ func (s *Server) fetchGitHubLatestUncached() (*latestReleaseInfo, error) {
 	if downloadURL == "" {
 		return nil, fmt.Errorf("release 中未找到 linux-%s 安装包", goarch)
 	}
-	if version == "" {
-		version = time.Now().UTC().Format("2006.01.02-1504")
-	}
 
 	cur := core.ProductVersion
-	outdated := version != "" && version != cur
+	outdated := isReleaseOutdated(cur, version)
 
 	return &latestReleaseInfo{
 		Version: version, Tag: rel.TagName, PublishedAt: rel.PublishedAt,
@@ -193,6 +178,67 @@ func (s *Server) fetchGitHubLatestUncached() (*latestReleaseInfo, error) {
 		CurrentVersion: cur, Outdated: outdated,
 		Commit: commit,
 	}, nil
+}
+
+// pickReleaseVersion chooses the authoritative release version.
+// Priority: body "Version:" line > max suffixed date asset (YYYY.MM.DD-*) > bare date > legacy.
+func pickReleaseVersion(assetNames []string, goarch, body string, now time.Time) string {
+	if m := regexp.MustCompile(`(?m)^Version:\s*(\S+)`).FindStringSubmatch(body); len(m) == 2 {
+		return strings.TrimSpace(m[1])
+	}
+	suffixedRe := regexp.MustCompile(`^pathweaver-(\d{4}\.\d{2}\.\d{2}-[0-9A-Za-z]+)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz$`)
+	bareRe := regexp.MustCompile(`^pathweaver-(\d{4}\.\d{2}\.\d{2})-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz$`)
+	legacyRe := regexp.MustCompile(`^pathweaver-(.+)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz$`)
+	best := ""
+	bare := ""
+	legacy := ""
+	for _, name := range assetNames {
+		if m := suffixedRe.FindStringSubmatch(name); len(m) == 2 {
+			if m[1] > best {
+				best = m[1]
+			}
+			continue
+		}
+		if m := bareRe.FindStringSubmatch(name); len(m) == 2 {
+			if m[1] > bare {
+				bare = m[1]
+			}
+			continue
+		}
+		if m := legacyRe.FindStringSubmatch(name); len(m) == 2 && !strings.HasPrefix(m[1], "linux") {
+			if legacy == "" {
+				legacy = m[1]
+			}
+		}
+	}
+	if best != "" {
+		return best
+	}
+	if bare != "" {
+		return bare
+	}
+	if legacy != "" {
+		return legacy
+	}
+	return now.Format("2006.01.02-1504")
+}
+
+// isReleaseOutdated reports whether current installed version is behind latest.
+func isReleaseOutdated(current, latest string) bool {
+	current = strings.TrimSpace(current)
+	latest = strings.TrimSpace(latest)
+	if latest == "" || current == "" {
+		return latest != "" && latest != current
+	}
+	if current == latest {
+		return false
+	}
+	// Bare calendar day vs same-day timed/sha build → outdated.
+	if regexp.MustCompile(`^\d{4}\.\d{2}\.\d{2}$`).MatchString(current) &&
+		strings.HasPrefix(latest, current+"-") {
+		return true
+	}
+	return current != latest
 }
 
 func (s *Server) handleUpdatesLatest(w http.ResponseWriter, r *http.Request) {

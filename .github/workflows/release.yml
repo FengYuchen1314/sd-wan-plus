@@ -55,19 +55,23 @@ jobs:
           FORCE_WEB_BUILD: "0"
         run: |
           chmod +x packaging/build-package.sh
-          VERSION="$(date -u +%Y.%m.%d-%H%M)"
+          VERSION="$(date -u +%Y.%m.%d)-${GITHUB_SHA::7}"
           echo "VERSION=${VERSION}"
+          echo -n "$VERSION" > dist-version.txt
           VERSION="$VERSION" packaging/build-package.sh
           # Stable names for one-click install (do not change between commits)
           cp "dist/pathweaver-"*-"${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" \
              "dist/pathweaver-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
+          cp dist-version.txt "dist/VERSION"
           ls -la dist/
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: pathweaver-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/*.tar.gz
+          path: |
+            dist/*.tar.gz
+            dist/VERSION
           if-no-files-found: error
 
   publish:
@@ -86,13 +90,23 @@ jobs:
       - name: List assets
         run: find release-assets -type f -ls
 
+      - name: Resolve version
+        id: ver
+        run: |
+          VERSION=$(head -n1 "$(find release-assets -name VERSION | head -1)")
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "Resolved VERSION=$VERSION"
+
       - name: Publish / update latest release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: PathWeaver latest
           body: |
-            统一安装包（主控与子节点同一包，`--role` 区分）。版本号为构建时刻 UTC：`YYYY.MM.DD-HHMM`。
+            统一安装包（主控与子节点同一包，`--role` 区分）。
+
+            Version: ${{ steps.ver.outputs.version }}
+            Commit: ${{ github.sha }}
 
             ### 控制机
             ```bash
@@ -104,8 +118,6 @@ jobs:
             ```bash
             sudo bash install.sh --role node --parent-url http://PARENT:14302 --token TOKEN --name node-a
             ```
-
-            Commit: ${{ github.sha }}
           files: |
             release-assets/**/*.tar.gz
           make_latest: true
