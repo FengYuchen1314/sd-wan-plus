@@ -9,6 +9,13 @@ const selected = ref<string[]>([])
 const msg = ref('')
 const error = ref('')
 const nodeNames = ref<Record<string, string>>({})
+const nodeMeta = ref<Record<string, { wgStart: number; wgEnd: number; public: boolean; suggestAddr: string }>>({})
+
+const linkDialogOpen = ref(false)
+const linkBusy = ref(false)
+const linkAddr = ref('')
+const linkPort = ref(14303)
+const linkShowPort = ref(false)
 
 const pathPanelOpen = ref(false)
 const pathList = ref<string[][]>([])
@@ -50,14 +57,55 @@ function highlightPath(hops: string[]) {
   }
 }
 
+function isPrivateIPv4(host: string) {
+  const m = host.trim().match(/^(\d+)\.(\d+)\.(\d+)\.(\d+)$/)
+  if (!m) return false
+  const a = +m[1], b = +m[2]
+  if (a === 10 || a === 127) return true
+  if (a === 192 && b === 168) return true
+  if (a === 172 && b >= 16 && b <= 31) return true
+  if (a === 100 && b >= 64 && b <= 127) return true
+  return false
+}
+
+function nodeIsPublic(addrs: any[] | undefined) {
+  if (!addrs?.length) return false
+  for (const a of addrs) {
+    const t = (a.address_type || '').toLowerCase()
+    if (t === 'lan') continue
+    const host = String(a.address || '').trim()
+    if (!host) continue
+    if (t === 'public' || !isPrivateIPv4(host)) return true
+  }
+  return false
+}
+
+function suggestAddress(addrs: any[] | undefined) {
+  if (!addrs?.length) return ''
+  const pub = addrs.find((a) => (a.address_type || '').toLowerCase() === 'public')
+  if (pub?.address) return pub.address
+  const primary = addrs.find((a) => a.is_primary)
+  if (primary?.address) return primary.address
+  return addrs[0]?.address || ''
+}
+
 async function load() {
   const g = await api.topology()
   if (!el.value) return
   const names: Record<string, string> = {}
+  const meta: Record<string, { wgStart: number; wgEnd: number; public: boolean; suggestAddr: string }> = {}
   for (const n of g.nodes || []) {
     names[n.id] = n.display_name
+    const addrs = (g.addresses && g.addresses[n.id]) || []
+    meta[n.id] = {
+      wgStart: n.wg_port_range_start || 14303,
+      wgEnd: n.wg_port_range_end || n.wg_port_range_start || 14303,
+      public: nodeIsPublic(addrs),
+      suggestAddr: suggestAddress(addrs),
+    }
   }
   nodeNames.value = names
+  nodeMeta.value = meta
 
   cy.value?.destroy()
   const elements: cytoscape.ElementDefinition[] = []
@@ -119,21 +167,55 @@ async function load() {
   }
 }
 
-async function createLink() {
+function openLinkDialog() {
   if (selected.value.length !== 2) return
+  const [, b] = selected.value // first=initiator, second=listener (passive)
+  const meta = nodeMeta.value[b]
+  linkShowPort.value = !(meta?.public)
+  linkAddr.value = meta?.suggestAddr || ''
+  linkPort.value = meta?.wgStart || 14303
+  linkDialogOpen.value = true
+  error.value = ''
+}
+
+function closeLinkDialog() {
+  linkDialogOpen.value = false
+}
+
+async function submitLink() {
+  if (selected.value.length !== 2) return
+  const addr = linkAddr.value.trim()
+  if (!addr) {
+    error.value = '请填写被动端可达地址'
+    return
+  }
+  if (linkShowPort.value) {
+    const p = Number(linkPort.value)
+    if (!Number.isInteger(p) || p < 1 || p > 65535) {
+      error.value = '监听端口无效'
+      return
+    }
+  }
   const [a, b] = selected.value
-  const addr = prompt('被动端可达 IP/域名（默认单向：先选节点主动拨后选节点）')
-  if (!addr) return
+  linkBusy.value = true
+  error.value = ''
   try {
-    await api.createLink({
+    const body: any = {
       node_a: a, node_b: b, initiator_node_id: a,
       listener_address: addr, enabled: true, bidirectional: false,
-    })
+    }
+    // LAN listener: always send port (default from DB). Public: omit → server AllocateWGPort.
+    if (linkShowPort.value) {
+      body.listener_port = Number(linkPort.value)
+    }
+    await api.createLink(body)
     msg.value = '链路已创建（单向）'
-    error.value = ''
+    linkDialogOpen.value = false
     await load()
   } catch (e: any) {
     error.value = e.message
+  } finally {
+    linkBusy.value = false
   }
 }
 
@@ -237,7 +319,7 @@ onMounted(load)
     <h1 class="page-title">拓扑</h1>
     <p class="page-sub">虚线=控制树 · 实线=WireGuard 数据图 · 选两个节点可建链路或查看路径</p>
     <div class="row-actions" style="margin-bottom:0.75rem">
-      <button :disabled="selected.length !== 2" @click="createLink">建立 WireGuard 链路</button>
+      <button :disabled="selected.length !== 2" @click="openLinkDialog">建立 WireGuard 链路</button>
       <button :disabled="selected.length !== 2" class="secondary" @click="openPathPanel">查看路径</button>
       <button class="secondary" @click="load">刷新</button>
       <span class="mono" style="color:var(--muted)">已选 {{ selected.length }}/2</span>
@@ -246,6 +328,29 @@ onMounted(load)
     <p v-if="msg" class="success">{{ msg }}</p>
     <p v-if="error" class="error">{{ error }}</p>
     <div ref="el" class="topo-wrap" />
+
+    <div v-if="linkDialogOpen" class="modal-backdrop" @click.self="closeLinkDialog">
+      <div class="modal card" role="dialog" aria-modal="true">
+        <h2 style="margin-bottom:0.5rem">建立 WireGuard 链路</h2>
+        <p class="page-sub" style="margin-bottom:0.75rem">
+          单向：{{ selectedLabels[0] }} → {{ selectedLabels[1] }}（先选主动，后选被动）
+        </p>
+        <div class="form-row">
+          <label>被动端可达地址</label>
+          <input v-model="linkAddr" placeholder="IP / 域名（端口映射时填对外地址）" />
+        </div>
+        <div v-if="linkShowPort" class="form-row">
+          <label>被动端监听端口</label>
+          <input v-model.number="linkPort" type="number" min="1" max="65535" />
+          <p class="page-sub" style="margin:0.35rem 0 0">默认取节点库中端口；有端口映射时可改成对外端口</p>
+        </div>
+        <div class="modal-actions" style="margin-top:1rem">
+          <button :disabled="linkBusy" @click="submitLink">{{ linkBusy ? '创建中…' : '创建' }}</button>
+          <span style="flex:1"></span>
+          <button class="secondary" :disabled="linkBusy" @click="closeLinkDialog">取消</button>
+        </div>
+      </div>
+    </div>
 
     <div v-if="pathPanelOpen" class="path-panel card" style="margin-top:1rem">
       <div class="row-actions" style="margin-bottom:0.5rem; justify-content:space-between">
@@ -303,5 +408,26 @@ onMounted(load)
   margin-left: auto;
   font-size: 0.75rem;
   color: #e8a838;
+}
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 50;
+  padding: 1rem;
+}
+.modal {
+  width: min(440px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 1rem;
+}
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 </style>

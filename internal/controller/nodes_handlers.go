@@ -211,6 +211,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		NodeB           string `json:"node_b"`
 		InitiatorNodeID string `json:"initiator_node_id"`
 		ListenerAddress string `json:"listener_address"`
+		ListenerPort    *int   `json:"listener_port"` // optional; omit = AllocateWGPort (seamless)
 		AdminWeight     int    `json:"admin_weight"`
 		Enabled         bool   `json:"enabled"`
 		Bidirectional   bool   `json:"bidirectional"`
@@ -252,10 +253,20 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	portL, err := s.db.AllocateWGPort(listener)
-	if err != nil {
-		writeJSON(w, 400, map[string]string{"message": err.Error()})
-		return
+	var portL int
+	if body.ListenerPort != nil {
+		if !validUDPPort(*body.ListenerPort) {
+			writeJSON(w, 400, map[string]string{"message": "listener_port out of range"})
+			return
+		}
+		portL = *body.ListenerPort
+	} else {
+		var err error
+		portL, err = s.db.AllocateWGPort(listener)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"message": err.Error()})
+			return
+		}
 	}
 	portI := 0
 	if body.Bidirectional {
