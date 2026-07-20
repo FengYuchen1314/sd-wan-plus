@@ -4,10 +4,12 @@
 
 ### 使用 GitHub Release 安装包（推荐）
 
-控制机一键安装：
+控制机一键安装（防缓存）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh | sudo bash
+curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+  "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh?$(date +%s)" \
+  | sudo bash
 ```
 
 或手动下载 `pathweaver-linux-amd64.tar.gz` / `pathweaver-linux-arm64.tar.gz` 后：

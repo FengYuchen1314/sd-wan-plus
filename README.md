@@ -6,21 +6,25 @@
 
 ## 控制机一键安装
 
-在 Debian 12+ / Ubuntu 22.04+（x86_64 或 arm64）上执行：
+在 Debian 12+ / Ubuntu 22.04+（x86_64 或 arm64）上执行（**带防缓存参数**，避免命中旧脚本）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh | sudo bash
+curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+  "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh?$(date +%s)" \
+  | sudo bash
 ```
 
-脚本会下载统一安装包，并从**真实终端**交互询问密码、公网地址等（兼容 `curl | bash`）。
+成功时应先看到一行：`[pathweaver] install-controller.sh rev=...`，随后交互询问密码、公网地址等。
 
 非交互示例：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh | sudo bash -s -- \
-  --public-address YOUR_PUBLIC_IP \
-  --password 'YOUR_PASSWORD' \
-  --name controller
+curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+  "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh?$(date +%s)" \
+  | sudo bash -s -- \
+    --public-address YOUR_PUBLIC_IP \
+    --password 'YOUR_PASSWORD' \
+    --name controller
 ```
 
 安装完成后访问：`http://YOUR_PUBLIC_IP:14301`（用户名固定 `admin`）。

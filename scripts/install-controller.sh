@@ -1,10 +1,16 @@
 #!/bin/bash
 # PathWeaver 控制机一键安装
-# 用法（交互）:
-#   curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh | sudo bash
-# 用法（非交互）:
-#   curl -fsSL ... | sudo bash -s -- --public-address 1.2.3.4 --password 'secret'
+# 防缓存推荐用法:
+#   curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+#     "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh?$(date +%s)" \
+#     | sudo bash
+#
+# 非交互:
+#   ... | sudo bash -s -- --public-address 1.2.3.4 --password 'secret'
 set -euo pipefail
+
+SCRIPT_REV="2026-07-20c"
+echo "[pathweaver] install-controller.sh rev=${SCRIPT_REV}"
 
 REPO="${PW_REPO:-FengYuchen1314/sd-wan-plus}"
 API="https://api.github.com/repos/${REPO}/releases/latest"
@@ -30,6 +36,16 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
+# curl|bash 时 stdin 是管道；交互安装必须挂回真实终端
+if [[ ! -t 0 ]]; then
+  if [[ -r /dev/tty ]]; then
+    exec </dev/tty
+  else
+    echo "无法打开 /dev/tty。请改用非交互参数：--public-address 与 --password"
+    exit 1
+  fi
+fi
+
 ARCH=$(uname -m)
 case "$ARCH" in
   x86_64|amd64) GOARCH=amd64 ;;
@@ -38,18 +54,35 @@ case "$ARCH" in
 esac
 
 ASSET="pathweaver-linux-${GOARCH}.tar.gz"
-echo "[1/4] 获取 Latest Release 中的 ${ASSET} ..."
+echo "[1/4] 获取 Latest Release 中的 ${ASSET}（绕过 CDN 缓存）..."
 
-# Prefer stable asset name from latest release; fallback to GitHub API browser_download_url match
-DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${ASSET}"
-if ! curl -fsI "$DOWNLOAD_URL" >/dev/null 2>&1; then
-  echo "稳定资源名暂不可用，尝试从 API 解析..."
-  DOWNLOAD_URL=$(curl -fsSL "$API" | sed -n "s/.*\"browser_download_url\": \"\\([^\"]*linux-${GOARCH}\\.tar\\.gz\\)\".*/\\1/p" | head -n1)
+# 优先用 GitHub API 拿到当前 latest 的真实 browser_download_url（带资产 id，避免 stale redirect）
+DOWNLOAD_URL=""
+API_JSON=$(curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+  -H 'Accept: application/vnd.github+json' \
+  "${API}?$(date +%s)" || true)
+if [[ -n "$API_JSON" ]]; then
+  DOWNLOAD_URL=$(printf '%s' "$API_JSON" | sed -n "s/.*\"browser_download_url\": \"\\([^\"]*${ASSET}\\)\".*/\\1/p" | head -n1)
+  if [[ -z "$DOWNLOAD_URL" ]]; then
+    DOWNLOAD_URL=$(printf '%s' "$API_JSON" | sed -n "s/.*\"browser_download_url\": \"\\([^\"]*linux-${GOARCH}\\.tar\\.gz\\)\".*/\\1/p" | head -n1)
+  fi
 fi
-[[ -n "${DOWNLOAD_URL:-}" ]] || { echo "未找到 linux-${GOARCH} 安装包，请确认 Release 已发布: https://github.com/${REPO}/releases/latest"; exit 1; }
+if [[ -z "$DOWNLOAD_URL" ]]; then
+  DOWNLOAD_URL="https://github.com/${REPO}/releases/latest/download/${ASSET}?$(date +%s)"
+fi
 
 echo "[2/4] 下载: $DOWNLOAD_URL"
-curl -fL --retry 3 --retry-delay 2 -o "$TMP/pathweaver.tar.gz" "$DOWNLOAD_URL"
+curl -fL --retry 3 --retry-delay 2 \
+  -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+  -o "$TMP/pathweaver.tar.gz" "$DOWNLOAD_URL"
+
+# 粗校验：过小多半是 HTML 错误页
+SIZE=$(wc -c < "$TMP/pathweaver.tar.gz" | tr -d ' ')
+if [[ "$SIZE" -lt 1000000 ]]; then
+  echo "下载内容过小 (${SIZE} bytes)，可能命中错误页/旧缓存。请重试或检查 Release："
+  echo "  https://github.com/${REPO}/releases/latest"
+  exit 1
+fi
 
 echo "[3/4] 解压..."
 tar -xzf "$TMP/pathweaver.tar.gz" -C "$TMP"
@@ -57,7 +90,7 @@ INSTALL_SH=$(find "$TMP" -maxdepth 3 -type f -name install.sh | head -n1)
 [[ -n "$INSTALL_SH" ]] || { echo "安装包内缺少 install.sh"; exit 1; }
 PKG_DIR=$(dirname "$INSTALL_SH")
 
-echo "[4/4] 执行控制机安装..."
+echo "[4/4] 执行控制机安装（交互输入走 /dev/tty）..."
 ARGS=(--role controller --name "$CTRL_NAME")
 [[ -n "$PUBLIC_ADDR" ]] && ARGS+=(--public-address "$PUBLIC_ADDR")
 [[ -n "$ADMIN_PASS" ]] && ARGS+=(--password "$ADMIN_PASS")
@@ -67,8 +100,8 @@ fi
 ARGS+=("${EXTRA_ARGS[@]}")
 
 cd "$PKG_DIR"
-# curl|bash 时 stdin 是管道；把终端交还给后续交互安装
-if [[ ! -t 0 ]] && [[ -r /dev/tty ]]; then
+# 再次确保子脚本 stdin 为终端
+if [[ -r /dev/tty ]]; then
   exec </dev/tty
 fi
 bash ./install.sh "${ARGS[@]}"
