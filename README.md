@@ -12,7 +12,7 @@
 curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh | sudo bash
 ```
 
-脚本会自动：检测架构 → 下载 [Latest Release](https://github.com/FengYuchen1314/sd-wan-plus/releases/latest) 统一安装包 → 交互安装控制机。
+脚本会下载统一安装包，并从**真实终端**交互询问密码、公网地址等（兼容 `curl | bash`）。
 
 非交互示例：
 

@@ -83,6 +83,33 @@ if [[ -z "$ROLE" ]]; then
   exit 1
 fi
 
+# curl|bash 时 stdin 是管道，交互 read 会立刻 EOF 退出；改从终端读入
+ensure_tty() {
+  if [[ -t 0 ]]; then
+    return 0
+  fi
+  if [[ -r /dev/tty ]]; then
+    exec </dev/tty
+    return 0
+  fi
+  return 1
+}
+
+ask() {
+  # ask "提示" VAR_NAME [secret]
+  local prompt=$1
+  local __var=$2
+  local secret=${3:-0}
+  local __val=""
+  if [[ "$secret" == "1" ]]; then
+    read -rsp "$prompt" __val
+    echo
+  else
+    read -rp "$prompt" __val
+  fi
+  printf -v "$__var" '%s' "$__val"
+}
+
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 # 安装包根目录：脚本所在目录，或解压后的 pathweaver/
 PKG_ROOT="$SCRIPT_DIR"
@@ -126,23 +153,34 @@ install_controller() {
   echo "============================================"
 
   if [[ "$NONINTERACTIVE" != "1" ]]; then
+    if ! ensure_tty; then
+      echo "当前无法交互（例如 curl|bash 且无终端）。请改用："
+      echo "  curl -fsSL ... | sudo bash -s -- --public-address IP --password 'SECRET'"
+      exit 1
+    fi
     if [[ -z "$ADMIN_PASS" ]]; then
       while true; do
-        read -rsp "管理员密码: " ADMIN_PASS; echo
-        read -rsp "确认密码: " ADMIN_PASS2; echo
+        ask "管理员密码: " ADMIN_PASS 1
+        ask "确认密码: " ADMIN_PASS2 1
         [[ "$ADMIN_PASS" == "$ADMIN_PASS2" ]] && [[ ${#ADMIN_PASS} -ge 8 ]] && break
         echo "密码不一致或短于 8 位"
       done
     fi
     if [[ -z "$PUBLIC_ADDR" ]]; then
-      read -rp "控制机公网地址: " PUBLIC_ADDR
+      ask "控制机公网地址: " PUBLIC_ADDR
     fi
-    read -rp "控制机名称 [$CTRL_NAME]: " _n; CTRL_NAME=${_n:-$CTRL_NAME}
-    read -rp "Web 端口 [$WEB_PORT]: " _p; WEB_PORT=${_p:-$WEB_PORT}
-    read -rp "节点服务端口 [$NODE_PORT]: " _p; NODE_PORT=${_p:-$NODE_PORT}
-    read -rp "WG 起始 [$WG_START]: " _p; WG_START=${_p:-$WG_START}
-    read -rp "WG 结束 [$WG_END]: " _p; WG_END=${_p:-$WG_END}
-    read -rp "Overlay [$OVERLAY]: " _p; OVERLAY=${_p:-$OVERLAY}
+    ask "控制机名称 [$CTRL_NAME]: " _n
+    CTRL_NAME=${_n:-$CTRL_NAME}
+    ask "Web 端口 [$WEB_PORT]: " _p
+    WEB_PORT=${_p:-$WEB_PORT}
+    ask "节点服务端口 [$NODE_PORT]: " _p
+    NODE_PORT=${_p:-$NODE_PORT}
+    ask "WG 起始 [$WG_START]: " _p
+    WG_START=${_p:-$WG_START}
+    ask "WG 结束 [$WG_END]: " _p
+    WG_END=${_p:-$WG_END}
+    ask "Overlay [$OVERLAY]: " _p
+    OVERLAY=${_p:-$OVERLAY}
   fi
 
   [[ -n "$ADMIN_PASS" ]] || { echo "需要 --password"; exit 1; }

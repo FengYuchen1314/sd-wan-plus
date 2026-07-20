@@ -67,4 +67,8 @@ fi
 ARGS+=("${EXTRA_ARGS[@]}")
 
 cd "$PKG_DIR"
+# curl|bash 时 stdin 是管道；把终端交还给后续交互安装
+if [[ ! -t 0 ]] && [[ -r /dev/tty ]]; then
+  exec </dev/tty
+fi
 bash ./install.sh "${ARGS[@]}"
