@@ -72,9 +72,10 @@ function colorOf(status: string) {
   return statusColor[status] || '#5a6a7a'
 }
 
-async function load() {
+async function load(opts: { refreshGithub?: boolean; skipGithub?: boolean } = {}) {
   try {
-    overview.value = await api.updatesOverview()
+    const q = opts.refreshGithub ? '?refresh_github=1' : opts.skipGithub ? '?skip_github=1' : ''
+    overview.value = await api.updatesOverview(q)
     await nextTick()
     renderTopo()
   } catch (e: any) {
@@ -213,10 +214,10 @@ async function rollback(id: string) {
 onMounted(() => {
   load()
   ws = connectWS((m) => {
-    if (m?.event === 'updates') load()
+    if (m?.event === 'updates') load({ skipGithub: true })
   })
   pollTimer = window.setInterval(() => {
-    if (activeJob.value?.status === 'Running' || phase.value) load()
+    if (activeJob.value?.status === 'Running' || phase.value) load({ skipGithub: true })
   }, 4000)
 })
 
@@ -268,7 +269,7 @@ onUnmounted(() => {
       <button :disabled="pulling" @click="pullAndStart">
         {{ pulling ? '拉取中…' : '拉取最新并开始更新' }}
       </button>
-      <button class="secondary" @click="load">刷新</button>
+      <button class="secondary" @click="load({ refreshGithub: true })">刷新</button>
     </div>
     <p v-if="msg" class="success">{{ msg }}</p>
     <p v-if="error" class="error">{{ error }}</p>

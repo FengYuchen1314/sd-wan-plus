@@ -59,7 +59,7 @@ export const api = {
 
   updates: () => request<any[]>('/api/updates'),
   updatesLatest: () => request<any>('/api/updates/latest'),
-  updatesOverview: () => request<any>('/api/updates/overview'),
+  updatesOverview: (query = '') => request<any>('/api/updates/overview' + query),
   pullLatest: (auto_start = true) =>
     request('/api/updates/pull-latest', { method: 'POST', body: JSON.stringify({ auto_start }) }),
   createUpdate: (body: any) => request('/api/updates', { method: 'POST', body: JSON.stringify(body) }),

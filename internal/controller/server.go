@@ -59,6 +59,11 @@ type Server struct {
 	store    *artifacts.Store
 	updateMu sync.Mutex
 	activeUpdate *activeUpdateJob
+
+	ghMu       sync.Mutex
+	ghCached   *latestReleaseInfo
+	ghCachedAt time.Time
+	ghCachedErr string
 }
 
 type activeUpdateJob struct {

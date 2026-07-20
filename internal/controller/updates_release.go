@@ -52,6 +52,65 @@ func (s *Server) updateRepo() string {
 }
 
 func (s *Server) fetchGitHubLatest() (*latestReleaseInfo, error) {
+	return s.fetchGitHubLatestCached(false)
+}
+
+func (s *Server) fetchGitHubLatestCached(force bool) (*latestReleaseInfo, error) {
+	const ttl = 30 * time.Minute
+	s.ghMu.Lock()
+	if !force && s.ghCached != nil && time.Since(s.ghCachedAt) < ttl {
+		info := *s.ghCached
+		s.ghMu.Unlock()
+		return &info, nil
+	}
+	if !force && s.ghCachedErr != "" && time.Since(s.ghCachedAt) < 5*time.Minute {
+		errMsg := s.ghCachedErr
+		cached := s.ghCached
+		s.ghMu.Unlock()
+		if cached != nil {
+			cp := *cached
+			return &cp, nil
+		}
+		return nil, fmt.Errorf("%s", errMsg)
+	}
+	s.ghMu.Unlock()
+
+	info, err := s.fetchGitHubLatestUncached()
+	s.ghMu.Lock()
+	defer s.ghMu.Unlock()
+	s.ghCachedAt = time.Now()
+	if err != nil {
+		s.ghCachedErr = err.Error()
+		// keep previous good cache if any
+		if s.ghCached != nil {
+			cp := *s.ghCached
+			return &cp, nil
+		}
+		// fallback: direct download URL without API
+		fb := s.directLatestFallback()
+		s.ghCached = fb
+		return fb, nil
+	}
+	s.ghCachedErr = ""
+	s.ghCached = info
+	cp := *info
+	return &cp, nil
+}
+
+func (s *Server) directLatestFallback() *latestReleaseInfo {
+	repo := s.updateRepo()
+	goarch := runtime.GOARCH
+	asset := fmt.Sprintf("pathweaver-linux-%s.tar.gz", goarch)
+	cur := core.ProductVersion
+	return &latestReleaseInfo{
+		Version: cur, Tag: "latest", PublishedAt: "",
+		AssetName: asset,
+		DownloadURL: fmt.Sprintf("https://github.com/%s/releases/latest/download/%s", repo, asset),
+		CurrentVersion: cur, Outdated: false,
+	}
+}
+
+func (s *Server) fetchGitHubLatestUncached() (*latestReleaseInfo, error) {
 	repo := s.updateRepo()
 	api := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
 	req, err := http.NewRequest(http.MethodGet, api, nil)
@@ -60,6 +119,9 @@ func (s *Server) fetchGitHubLatest() (*latestReleaseInfo, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", "PathWeaver-Controller")
+	if tok := os.Getenv("GITHUB_TOKEN"); tok != "" {
+		req.Header.Set("Authorization", "Bearer "+tok)
+	}
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -94,7 +156,6 @@ func (s *Server) fetchGitHubLatest() (*latestReleaseInfo, error) {
 			assetName = a.Name
 		}
 		if m := verRe.FindStringSubmatch(a.Name); len(m) == 2 && !strings.HasPrefix(m[1], "linux") {
-			// Prefer asset matching release commit
 			if short != "" && strings.Contains(m[1], short) {
 				version = m[1]
 				if downloadURL == "" {
@@ -122,7 +183,6 @@ func (s *Server) fetchGitHubLatest() (*latestReleaseInfo, error) {
 			version = "latest"
 		}
 	}
-	// Canonicalize to commit-based version when body has Commit:
 	if short != "" {
 		version = "0.1.0-" + short
 	}
@@ -131,7 +191,7 @@ func (s *Server) fetchGitHubLatest() (*latestReleaseInfo, error) {
 	outdated := version != "" && version != cur
 	if short != "" && strings.Contains(cur, short) {
 		outdated = false
-		version = cur // display the running build when it matches latest commit
+		version = cur
 	}
 
 	return &latestReleaseInfo{
@@ -218,7 +278,17 @@ func (s *Server) handleUpdatesOverview(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var latest any
-	if info, err := s.fetchGitHubLatest(); err == nil {
+	forceGitHub := r.URL.Query().Get("refresh_github") == "1"
+	if r.URL.Query().Get("skip_github") == "1" {
+		s.ghMu.Lock()
+		if s.ghCached != nil {
+			cp := *s.ghCached
+			latest = &cp
+		} else {
+			latest = map[string]any{"current_version": core.ProductVersion, "version": core.ProductVersion, "outdated": false}
+		}
+		s.ghMu.Unlock()
+	} else if info, err := s.fetchGitHubLatestCached(forceGitHub); err == nil {
 		latest = info
 	} else {
 		latest = map[string]any{"error": err.Error(), "current_version": core.ProductVersion}
@@ -242,10 +312,9 @@ func (s *Server) handlePullLatest(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = readJSON(r, &body)
 
-	info, err := s.fetchGitHubLatest()
-	if err != nil {
-		writeJSON(w, 502, map[string]string{"message": "拉取 GitHub Release 失败: " + err.Error()})
-		return
+	info, err := s.fetchGitHubLatestCached(true)
+	if err != nil || info == nil || info.DownloadURL == "" {
+		info = s.directLatestFallback()
 	}
 
 	tmpDir, err := os.MkdirTemp("", "pw-update-*")
