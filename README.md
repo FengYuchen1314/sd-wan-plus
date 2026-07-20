@@ -42,7 +42,7 @@ pathweaver-controller (Python/FastAPI)
 
 ```bash
 # 从 GitHub 下载安装脚本
-curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/main/install.sh -o /tmp/pw-install.sh
+curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/install.sh -o /tmp/pw-install.sh
 
 # 检查脚本内容后执行
 sudo bash /tmp/pw-install.sh
@@ -287,10 +287,10 @@ echo "PathWeaver 节点已完全卸载。"
 
 ```bash
 # 控制机
-curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/main/installer/uninstall-controller.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/installer/uninstall-controller.sh | sudo bash
 
 # 普通节点
-curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/main/installer/uninstall-node.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/installer/uninstall-node.sh | sudo bash
 ```
 
 ## 数据库备份与恢复
