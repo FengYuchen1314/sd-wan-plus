@@ -1,0 +1,90 @@
+syntax = "proto3";
+
+package pathweaver.config;
+
+message NodeDesiredState {
+    uint64 generation = 1;
+    string node_id = 2;
+
+    OverlayIdentity overlay_identity = 3;
+    repeated WireGuardLinkConfig wireguard_links = 4;
+    repeated uint32 listen_ports = 5;
+    repeated PeerConfig peers = 6;
+
+    repeated NftablesRule nftables_rules = 7;
+    repeated PolicyRule policy_rules = 8;
+    repeated RouteTableConfig route_tables = 9;
+    ForwardingSettings forwarding_settings = 10;
+    repeated NatRuleConfig nat_rules = 11;
+
+    string control_parent_id = 12;
+    string recovery_endpoint = 13;
+    string config_hash = 14;
+}
+
+message OverlayIdentity {
+    string ipv4 = 1;
+    string ipv6 = 2;
+    string dummy_interface = 3;
+}
+
+message WireGuardLinkConfig {
+    string link_id = 1;
+    string interface_name = 2;
+    uint32 listen_port = 3;
+    string peer_public_key = 4;
+    string peer_endpoint = 5;
+    uint32 persistent_keepalive = 6;
+    bool is_initiator = 7;
+    string node_private_key = 8;
+    string overlay_ip = 9;
+    string peer_overlay_ip = 10;
+}
+
+message PeerConfig {
+    string public_key = 1;
+    string endpoint = 2;
+    repeated string allowed_ips = 3;
+    uint32 persistent_keepalive = 4;
+}
+
+message NftablesRule {
+    string table = 1;
+    string chain = 2;
+    string match_src = 3;
+    string match_dst = 4;
+    string protocol = 5;
+    uint32 dport = 6;
+    uint32 fwmark = 7;
+    string action = 8;
+}
+
+message PolicyRule {
+    uint32 priority = 1;
+    uint32 fwmark = 2;
+    uint32 table_id = 3;
+}
+
+message RouteTableConfig {
+    uint32 table_id = 1;
+    repeated RouteConfig routes = 2;
+}
+
+message RouteConfig {
+    string destination = 1;
+    string via = 2;
+    string dev = 3;
+    uint32 metric = 4;
+}
+
+message ForwardingSettings {
+    bool ipv4_forwarding = 1;
+    bool ipv6_forwarding = 2;
+}
+
+message NatRuleConfig {
+    string rule_type = 1;
+    string source = 2;
+    string destination = 3;
+    string out_interface = 4;
+}

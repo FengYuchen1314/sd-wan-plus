@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+package pathweaver.artifact;
+
+message ArtifactRequest {
+    string artifact_id = 1;
+    string artifact_name = 2;
+    string version = 3;
+    string architecture = 4;
+    uint64 offset = 5;
+    uint32 chunk_size = 6;
+}
+
+message ArtifactChunk {
+    string artifact_id = 1;
+    uint64 offset = 2;
+    bytes data = 3;
+    bool is_last = 4;
+    string sha256 = 5;
+}
+
+message ArtifactListRequest {
+    string version = 1;
+    string architecture = 2;
+}
+
+message ArtifactInfo {
+    string artifact_id = 1;
+    string name = 2;
+    string version = 3;
+    string sha256 = 4;
+    uint64 size_bytes = 5;
+}
+
+message ArtifactListResponse {
+    repeated ArtifactInfo artifacts = 1;
+}
+
+message ManifestRequest {
+    string version = 1;
+    string architecture = 2;
+}
+
+message ManifestResponse {
+    string version = 1;
+    string sha256 = 2;
+    bytes manifest_data = 3;
+    bytes signature = 4;
+}
+
+service ArtifactService {
+    rpc ListArtifacts(ArtifactListRequest) returns (ArtifactListResponse);
+    rpc GetArtifactChunk(ArtifactRequest) returns (ArtifactChunk);
+    rpc GetManifest(ManifestRequest) returns (ManifestResponse);
+}

@@ -1,0 +1,13 @@
+[Unit]
+Description=PathWeaver netd
+After=network-online.target
+
+[Service]
+ExecStart=/opt/pathweaver/bin/pathweaver-netd
+Restart=always
+RestartSec=3
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+
+[Install]
+WantedBy=multi-user.target

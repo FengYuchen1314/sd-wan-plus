@@ -1,7 +1,18 @@
 import { defineConfig } from 'vite'
-import react from '@vitejs/plugin-react'
+import vue from '@vitejs/plugin-vue'
 
-// https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [vue()],
+  server: {
+    port: 5173,
+    proxy: {
+      '/api': 'http://127.0.0.1:8443',
+      '/ws': { target: 'ws://127.0.0.1:8443', ws: true },
+      '/bootstrap': 'http://127.0.0.1:8443',
+    },
+  },
+  build: {
+    outDir: 'dist',
+    emptyOutDir: true,
+  },
 })

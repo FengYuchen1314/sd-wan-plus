@@ -1,8 +1,12 @@
-# Rust
-target/
-debug/
-*.rs.bk
-protoc.exe
+# Binaries
+/bin/
+!/bin/.gitkeep
+
+# Go
+*.exe
+*.test
+*.out
+vendor/
 
 # Node
 node_modules/
@@ -16,11 +20,13 @@ web/dist/
 .DS_Store
 Thumbs.db
 
-# Database
+# Database / secrets
 *.db
 *.db-journal
 *.db-wal
 *.db-shm
+data/
+.pathweaver.key
 
 # Environment
 .env

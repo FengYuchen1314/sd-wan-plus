@@ -1,0 +1,13 @@
+[Unit]
+Description=PathWeaver Agent
+After=pathweaver-netd.service network-online.target
+
+[Service]
+Environment=PW_DATA_DIR=/opt/pathweaver/data
+EnvironmentFile=-/opt/pathweaver/data/agent.env
+ExecStart=/opt/pathweaver/bin/pathweaver-agent
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

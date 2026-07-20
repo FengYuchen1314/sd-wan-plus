@@ -1,32 +1,31 @@
-FROM rust:1.83-slim-bookworm AS builder
+# Multi-stage PathWeaver image (controller + static UI)
+FROM node:22-alpine AS web
+WORKDIR /web
+COPY web/package*.json ./
+RUN npm ci
+COPY web/ ./
+RUN npm run build
 
-RUN apt-get update && apt-get install -y \
-    pkg-config libssl-dev protobuf-compiler \
-    nodejs npm curl \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /build
+FROM golang:1.22-bookworm AS build
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
-
-RUN cd web && npm install && npm run build && cd ..
-
-RUN cargo build --release -p pathweaver-controller
+RUN CGO_ENABLED=0 go build -o /out/pathweaver-controller ./cmd/pathweaver-controller \
+ && CGO_ENABLED=0 go build -o /out/pathweaver-agent ./cmd/pathweaver-agent \
+ && CGO_ENABLED=0 go build -o /out/pathweaver-netd ./cmd/pathweaver-netd \
+ && CGO_ENABLED=0 go build -o /out/pathweaver-updater ./cmd/pathweaver-updater
 
 FROM debian:bookworm-slim
-
-RUN apt-get update && apt-get install -y \
-    ca-certificates wireguard-tools nftables sqlite3 \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=builder /build/target/release/pathweaver-controller /usr/local/bin/
-COPY --from=builder /build/web/dist /opt/pathweaver/web
-
-RUN mkdir -p /opt/pathweaver/data
-ENV PW_STATIC_DIR=/opt/pathweaver/web
-ENV RUST_LOG=info
-
-EXPOSE 8443 8444 30000-30999/udp
-
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates wireguard-tools iproute2 nftables \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /opt/pathweaver
+COPY --from=build /out/ /opt/pathweaver/bin/
+COPY --from=web /web/dist/ /opt/pathweaver/web/
+ENV PW_STATIC_DIR=/opt/pathweaver/web \
+    PW_DATA_DIR=/opt/pathweaver/data \
+    PW_DB_PATH=/opt/pathweaver/data/pathweaver.db \
+    PW_WEB_PORT=8443
+EXPOSE 8443 8444
 VOLUME ["/opt/pathweaver/data"]
-
-ENTRYPOINT ["pathweaver-controller"]
+CMD ["/opt/pathweaver/bin/pathweaver-controller"]

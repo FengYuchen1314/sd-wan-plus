@@ -1,6 +1,6 @@
 # PathWeaver 最终开发计划
 
-## 单用户 · Rust 后端 · 递归部署 · 图状 WireGuard SD-WAN
+## 单用户 · Go 后端 · Vue 控制台 · 递归部署 · 图状 WireGuard SD-WAN
 
 ------
 
@@ -18,7 +18,7 @@ PathWeaver 是一套自托管 SD-WAN 组网与控制平台。
 2. 一张可以增加额外链路的 **WireGuard 数据图**；
 3. 一套由控制机统一编译和下发的**流量路径策略**。
 
-系统只有控制机运行 Web UI。普通节点不运行管理面板，只运行 Rust Agent、网络服务和更新服务。
+系统只有控制机运行 Web UI。普通节点不运行管理面板，只运行 Go Agent、网络服务和更新服务。
 
 ------
 
@@ -171,39 +171,38 @@ WireGuard 数据图可以另外增加交叉链路：
 
 ------
 
-# 4. Rust 技术方案
+# 4. Go + Vue 技术方案
 
 ## 4.1 后端
 
 | 部分       | 技术                                           |
 | ---------- | ---------------------------------------------- |
-| 异步运行时 | Tokio                                          |
-| Web API    | Axum                                           |
-| 节点 RPC   | Tonic gRPC                                     |
-| 数据库     | SQLite + SQLx                                  |
-| TLS        | Rustls                                         |
-| 序列化     | Serde                                          |
-| CLI        | Clap                                           |
-| 日志       | tracing                                        |
-| 密码哈希   | Argon2id                                       |
-| 本地 IPC   | Unix Domain Socket + Protobuf                  |
-| 网络配置   | rtnetlink、nftables、WireGuard Generic Netlink |
+| 语言       | Go 1.22+                                       |
+| Web API    | chi + gorilla/websocket                        |
+| 节点控制面 | HTTP bootstrap / DesiredState 拉取；可扩展 gRPC |
+| 数据库     | SQLite（modernc.org/sqlite）                   |
+| 序列化     | encoding/json + Protobuf 协议定义              |
+| CLI        | pathweaver-cli                                 |
+| 密码哈希   | Argon2id（golang.org/x/crypto）                |
+| 本地 IPC   | Unix Domain Socket（netd JSON）                |
+| 网络配置   | ip / wg / nftables（结构化 DesiredState）      |
 | 安装包签名 | Ed25519                                        |
 | 制品校验   | SHA-256                                        |
 
 ## 4.2 前端
 
 ```text
-React
+Vue 3
 TypeScript
 Vite
-TanStack Query
+Pinia
+Vue Router
 Cytoscape.js
 ```
 
 前端只在构建时依赖 Node.js。
 
-正式安装包内只包含编译后的静态文件，由 Rust Controller 托管。生产服务器不安装 Node.js。
+正式安装包内只包含编译后的静态文件，由 Go Controller 托管。生产服务器不安装 Node.js。
 
 ------
 
@@ -1650,54 +1649,32 @@ created_at
 
 ```text
 pathweaver/
-├── Cargo.toml
-├── Cargo.lock
-├── rust-toolchain.toml
-│
-├── crates/
-│   ├── pathweaver-core/
-│   ├── pathweaver-proto/
+├── go.mod
+├── go.sum
+├── cmd/
 │   ├── pathweaver-controller/
 │   ├── pathweaver-agent/
 │   ├── pathweaver-netd/
 │   ├── pathweaver-updater/
-│   ├── pathweaver-topology/
-│   ├── pathweaver-routing/
-│   ├── pathweaver-storage/
-│   ├── pathweaver-security/
 │   └── pathweaver-cli/
-│
-├── proto/
-│   ├── enrollment.proto
-│   ├── control.proto
-│   ├── config.proto
-│   ├── probe.proto
-│   ├── artifact.proto
-│   └── update.proto
-│
-├── web/
+├── internal/
+│   ├── core/
+│   ├── storage/
+│   ├── security/
+│   ├── topology/
+│   ├── routing/
+│   ├── controller/
+│   ├── agent/
+│   ├── netd/
+│   ├── updater/
+│   └── relay/
+├── api/proto/
+├── web/                 # Vue 3 + TypeScript
 ├── migrations/
 ├── installer/
-├── packaging/
-│   ├── systemd/
-│   ├── release/
-│   └── deb/
-│
+├── packaging/systemd/
 ├── tests/
-│   ├── unit/
-│   ├── integration/
-│   ├── network-namespaces/
-│   └── end-to-end/
-│
 └── docs/
-    ├── ARCHITECTURE.md
-    ├── ENROLLMENT.md
-    ├── CONTROL_TREE.md
-    ├── WIREGUARD_GRAPH.md
-    ├── ROUTING_POLICY.md
-    ├── UPDATE_PROTOCOL.md
-    ├── SECURITY.md
-    └── FAILURE_RECOVERY.md
 ```
 
 ------

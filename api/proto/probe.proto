@@ -1,0 +1,40 @@
+syntax = "proto3";
+
+package pathweaver.probe;
+
+message LinkProbeRequest {
+    string probe_id = 1;
+    string link_id = 2;
+    uint32 count = 3;
+    uint32 interval_ms = 4;
+}
+
+message EndToEndProbeRequest {
+    string probe_id = 1;
+    string source_node_id = 2;
+    string target_node_id = 3;
+    string policy_id = 4;
+    uint32 count = 5;
+    uint32 interval_ms = 6;
+}
+
+message ProbeResult {
+    string probe_id = 1;
+    string source_node_id = 2;
+    string link_id = 3;
+    uint32 success_count = 4;
+    uint32 failure_count = 5;
+    double packet_loss_pct = 6;
+    double rtt_min_ms = 7;
+    double rtt_median_ms = 8;
+    double rtt_p95_ms = 9;
+    double jitter_ms = 10;
+    uint64 probed_at = 11;
+    bool is_stale = 12;
+    string error_code = 13;
+}
+
+service ProbeService {
+    rpc ExecuteLinkProbe(LinkProbeRequest) returns (ProbeResult);
+    rpc ExecuteEndToEndProbe(EndToEndProbeRequest) returns (ProbeResult);
+}

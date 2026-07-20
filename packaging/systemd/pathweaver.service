@@ -1,0 +1,19 @@
+[Unit]
+Description=PathWeaver Controller
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pathweaver
+Environment=PW_DATA_DIR=/opt/pathweaver/data
+Environment=PW_DB_PATH=/opt/pathweaver/data/pathweaver.db
+Environment=PW_STATIC_DIR=/opt/pathweaver/web
+Environment=PW_WEB_PORT=8443
+Environment=PW_NODE_PORT=8444
+ExecStart=/opt/pathweaver/bin/pathweaver-controller
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

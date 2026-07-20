@@ -1,6 +1,0 @@
-fastapi>=0.115
-uvicorn[standard]>=0.34
-argon2-cffi>=23.1.0
-cryptography>=44.0.0
-python-multipart>=0.0.20
-websockets>=14.0

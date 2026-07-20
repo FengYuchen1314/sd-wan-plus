@@ -1,0 +1,324 @@
+package controller
+
+import (
+	"fmt"
+	"net/http"
+	"time"
+
+	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/security"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/storage"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/topology"
+	"github.com/go-chi/chi/v5"
+)
+
+func (s *Server) handleListNodes(w http.ResponseWriter, r *http.Request) {
+	nodes, err := s.db.ListNodes()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	statuses := make([]core.NodeStatus, 0, len(nodes))
+	now := time.Now()
+	for _, n := range nodes {
+		online := n.LastSeenAt != nil && now.Sub(*n.LastSeenAt) < 90*time.Second
+		consistent := n.DesiredGeneration != nil && n.ActiveGeneration != nil && *n.DesiredGeneration == *n.ActiveGeneration
+		statuses = append(statuses, core.NodeStatus{
+			NodeID: n.ID, DisplayName: n.DisplayName, AgentOnline: online,
+			ConfigConsistent: consistent, WGInterfacesOK: true,
+			LastHandshakeAt: n.LastHandshakeAt, OverlayReachable: online,
+			PathAvailable: online, UpdateConsistent: true,
+			AgentVersion: n.AgentVersion, DesiredGeneration: n.DesiredGeneration, ActiveGeneration: n.ActiveGeneration,
+		})
+	}
+	writeJSON(w, 200, map[string]any{"nodes": nodes, "statuses": statuses})
+}
+
+func (s *Server) handleRenameNode(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		DisplayName string `json:"display_name"`
+	}
+	if err := readJSON(r, &body); err != nil || body.DisplayName == "" {
+		writeJSON(w, 400, map[string]string{"message": "display_name required"})
+		return
+	}
+	if err := s.db.RenameNode(id, body.DisplayName); err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	admin := adminFrom(r.Context())
+	_ = s.db.AddAudit(&admin.ID, "rename_node", "node", &id, body.DisplayName, clientIP(r))
+	s.notify("nodes", nil)
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		NodeServicePort  *int `json:"node_service_port"`
+		WGPortRangeStart *int `json:"wg_port_range_start"`
+		WGPortRangeEnd   *int `json:"wg_port_range_end"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, 400, map[string]string{"message": err.Error()})
+		return
+	}
+	n, err := s.db.GetNode(id)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"message": "node not found"})
+		return
+	}
+	sp, ws, we := n.NodeServicePort, n.WGPortRangeStart, n.WGPortRangeEnd
+	if body.NodeServicePort != nil {
+		sp = *body.NodeServicePort
+	}
+	if body.WGPortRangeStart != nil {
+		ws = *body.WGPortRangeStart
+	}
+	if body.WGPortRangeEnd != nil {
+		we = *body.WGPortRangeEnd
+	}
+	if err := s.db.UpdateNodePorts(id, sp, ws, we); err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleListAddresses(w http.ResponseWriter, r *http.Request) {
+	list, err := s.db.ListNodeAddresses(chi.URLParam(r, "id"))
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, 200, list)
+}
+
+func (s *Server) handleAddAddress(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Address     string `json:"address"`
+		AddressType string `json:"address_type"`
+		IsPrimary   bool   `json:"is_primary"`
+	}
+	if err := readJSON(r, &body); err != nil || body.Address == "" {
+		writeJSON(w, 400, map[string]string{"message": "address required"})
+		return
+	}
+	if body.AddressType == "" {
+		body.AddressType = "public"
+	}
+	a, err := s.db.AddNodeAddress(id, body.Address, body.AddressType, body.IsPrimary)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, 200, a)
+}
+
+func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
+	links, err := s.db.ListLinks()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, 200, links)
+}
+
+func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		NodeA           string `json:"node_a"`
+		NodeB           string `json:"node_b"`
+		InitiatorNodeID string `json:"initiator_node_id"`
+		ListenerAddress string `json:"listener_address"`
+		AdminWeight     int    `json:"admin_weight"`
+		Enabled         bool   `json:"enabled"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, 400, map[string]string{"message": err.Error()})
+		return
+	}
+	if body.NodeA == "" || body.NodeB == "" || body.InitiatorNodeID == "" || body.ListenerAddress == "" {
+		writeJSON(w, 400, map[string]string{"message": "node_a, node_b, initiator_node_id, listener_address required"})
+		return
+	}
+	exists, err := s.db.LinkExistsBetween(body.NodeA, body.NodeB)
+	if err != nil || exists {
+		writeJSON(w, 409, map[string]string{"code": string(core.ErrConflict), "message": "link already exists"})
+		return
+	}
+	listener := body.NodeB
+	if body.InitiatorNodeID == body.NodeB {
+		listener = body.NodeA
+	}
+	port, err := s.db.AllocateWGPort(listener)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"message": err.Error()})
+		return
+	}
+	na, _ := s.db.GetNode(body.NodeA)
+	nb, _ := s.db.GetNode(body.NodeB)
+	if na == nil || nb == nil {
+		writeJSON(w, 404, map[string]string{"message": "node not found"})
+		return
+	}
+	weight := body.AdminWeight
+	if weight <= 0 {
+		weight = 1
+	}
+	link := &core.WireGuardLink{
+		NodeA: body.NodeA, NodeB: body.NodeB, InitiatorNodeID: body.InitiatorNodeID,
+		ListenerNodeID: listener, ListenerAddress: body.ListenerAddress, ListenerPort: port,
+		InterfaceNameA: storage.InterfaceName(body.NodeA, body.NodeB),
+		InterfaceNameB: storage.InterfaceName(body.NodeB, body.NodeA),
+		Enabled: body.Enabled, AdminWeight: weight, Status: core.LinkPending,
+	}
+	if err := s.db.CreateLink(link); err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	// endpoints
+	aIsInit := body.InitiatorNodeID == body.NodeA
+	epA := &core.WireGuardLinkEndpoint{
+		LinkID: link.ID, NodeID: body.NodeA, InterfaceName: link.InterfaceNameA,
+		PeerPublicKey: nb.WGPublicKey, IsInitiator: aIsInit,
+	}
+	epB := &core.WireGuardLinkEndpoint{
+		LinkID: link.ID, NodeID: body.NodeB, InterfaceName: link.InterfaceNameB,
+		PeerPublicKey: na.WGPublicKey, IsInitiator: !aIsInit,
+	}
+	if aIsInit {
+		ep := fmt.Sprintf("%s:%d", body.ListenerAddress, port)
+		epA.PeerEndpoint = &ep
+		epA.PersistentKeepalive = 25
+		epB.ListenPort = port
+	} else {
+		ep := fmt.Sprintf("%s:%d", body.ListenerAddress, port)
+		epB.PeerEndpoint = &ep
+		epB.PersistentKeepalive = 25
+		epA.ListenPort = port
+	}
+	_ = s.db.CreateLinkEndpoint(epA)
+	_ = s.db.CreateLinkEndpoint(epB)
+	if body.Enabled {
+		_ = s.db.SetLinkEnabled(link.ID, true)
+		link.Enabled = true
+		link.Status = core.LinkActive
+	}
+	admin := adminFrom(r.Context())
+	_ = s.db.AddAudit(&admin.ID, "create_link", "link", &link.ID, "", clientIP(r))
+	s.notify("links", link)
+	writeJSON(w, 200, link)
+}
+
+func (s *Server) handleUpdateLink(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	var body struct {
+		Enabled *bool `json:"enabled"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, 400, map[string]string{"message": err.Error()})
+		return
+	}
+	if body.Enabled != nil {
+		if err := s.db.SetLinkEnabled(id, *body.Enabled); err != nil {
+			writeJSON(w, 500, map[string]string{"message": err.Error()})
+			return
+		}
+	}
+	link, _ := s.db.GetLink(id)
+	writeJSON(w, 200, link)
+}
+
+func (s *Server) handleDeleteLink(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.db.DeleteLink(id); err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	admin := adminFrom(r.Context())
+	_ = s.db.AddAudit(&admin.ID, "delete_link", "link", &id, "", clientIP(r))
+	s.notify("links", nil)
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
+
+func (s *Server) handleTopology(w http.ResponseWriter, r *http.Request) {
+	g, err := topology.Build(s.db)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, 200, g)
+}
+
+func (s *Server) handleListTokens(w http.ResponseWriter, r *http.Request) {
+	list, err := s.db.ListEnrollmentTokens()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, 200, list)
+}
+
+func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		ParentNodeID      string `json:"parent_node_id"`
+		SuggestedNodeName string `json:"suggested_node_name"`
+		ParentAddress     string `json:"parent_address"`
+		ExpiresMinutes    int    `json:"expires_minutes"`
+	}
+	if err := readJSON(r, &body); err != nil {
+		writeJSON(w, 400, map[string]string{"message": err.Error()})
+		return
+	}
+	parent, err := s.db.GetNode(body.ParentNodeID)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"message": "parent not found"})
+		return
+	}
+	netw, err := s.db.GetNetwork()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	if body.ExpiresMinutes <= 0 {
+		body.ExpiresMinutes = 10
+	}
+	tok, err := security.RandomToken(24)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	t := &core.EnrollmentToken{
+		Token: tok, NetworkID: netw.ID, ParentNodeID: parent.ID,
+		SuggestedNodeName: body.SuggestedNodeName, AllowedInstallMode: "node",
+		ExpiresAt: time.Now().Add(time.Duration(body.ExpiresMinutes) * time.Minute),
+	}
+	if err := s.db.CreateEnrollmentToken(t); err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	addr := body.ParentAddress
+	if addr == "" {
+		addrs, _ := s.db.ListNodeAddresses(parent.ID)
+		if len(addrs) > 0 {
+			addr = addrs[0].Address
+		} else {
+			addr = s.cfg.PublicAddress
+		}
+	}
+	cmd := fmt.Sprintf(`curl -fsSL "http://%s:%d/bootstrap/install.sh?token=%s" | sudo bash`, addr, parent.NodeServicePort, tok)
+	admin := adminFrom(r.Context())
+	_ = s.db.AddAudit(&admin.ID, "create_enrollment_token", "enrollment_token", &t.ID, body.SuggestedNodeName, clientIP(r))
+	writeJSON(w, 200, map[string]any{"token": t, "install_command": cmd, "parent_address": addr, "parent_port": parent.NodeServicePort})
+}
+
+func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	if err := s.db.RevokeToken(id); err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	writeJSON(w, 200, map[string]string{"status": "ok"})
+}
