@@ -3,8 +3,10 @@ package routing
 import (
 	"fmt"
 	"log"
+	"net"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/netutil"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/storage"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/topology"
 )
@@ -89,7 +91,14 @@ func Compile(db *storage.DB, generation uint64, box interface {
 					cfg.ListenPort = uint32(ep.ListenPort)
 					cfg.PersistentKeepalive = uint32(ep.PersistentKeepalive)
 					if ep.PeerEndpoint != nil {
-						cfg.PeerEndpoint = *ep.PeerEndpoint
+						host := *ep.PeerEndpoint
+						if h, _, err := net.SplitHostPort(*ep.PeerEndpoint); err == nil {
+							host = h
+						}
+						// Drop private reverse endpoints so wireguard-go can learn NAT mapping from handshake.
+						if netutil.IsPublicDialable(host) || ep.IsInitiator {
+							cfg.PeerEndpoint = *ep.PeerEndpoint
+						}
 					}
 					break
 				}

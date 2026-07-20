@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/netutil"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/security"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/storage"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/topology"
@@ -225,13 +226,17 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"message": err.Error()})
 		return
 	}
-	// Dual-listen: both sides ListenPort; initiator dials listener; listener dials initiator when reachable
-	initAdv := body.ListenerAddress // placeholder; prefer initiator's advertise below
+	// Dual-listen: initiator always dials listener. Reverse dial only if initiator is publicly reachable.
+	initAdv := ""
 	if addrs, _ := s.db.ListNodeAddresses(initiator); len(addrs) > 0 {
-		initAdv = addrs[0].Address
+		for _, a := range addrs {
+			if a.AddressType != "lan" && netutil.IsPublicDialable(a.Address) {
+				initAdv = a.Address
+				break
+			}
+		}
 	}
 	listenToInit := fmt.Sprintf("%s:%d", body.ListenerAddress, portL)
-	initToListen := fmt.Sprintf("%s:%d", initAdv, portI)
 	epA := &core.WireGuardLinkEndpoint{
 		LinkID: link.ID, NodeID: body.NodeA, InterfaceName: link.InterfaceNameA,
 		PeerPublicKey: nb.WGPublicKey, PersistentKeepalive: 25,
@@ -242,16 +247,21 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		PeerPublicKey: na.WGPublicKey, PersistentKeepalive: 25,
 		IsInitiator: body.InitiatorNodeID == body.NodeB,
 	}
+	var reverse *string
+	if initAdv != "" {
+		ep := fmt.Sprintf("%s:%d", initAdv, portI)
+		reverse = &ep
+	}
 	if body.InitiatorNodeID == body.NodeA {
 		epA.ListenPort = portI
 		epA.PeerEndpoint = &listenToInit
 		epB.ListenPort = portL
-		epB.PeerEndpoint = &initToListen
+		epB.PeerEndpoint = reverse
 	} else {
 		epB.ListenPort = portI
 		epB.PeerEndpoint = &listenToInit
 		epA.ListenPort = portL
-		epA.PeerEndpoint = &initToListen
+		epA.PeerEndpoint = reverse
 	}
 	_ = s.db.CreateLinkEndpoint(epA)
 	_ = s.db.CreateLinkEndpoint(epB)

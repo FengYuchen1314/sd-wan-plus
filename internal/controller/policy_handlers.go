@@ -3,12 +3,14 @@ package controller
 import (
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"path/filepath"
 	"time"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/artifacts"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/netutil"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/routing"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/topology"
 	"github.com/go-chi/chi/v5"
@@ -237,12 +239,30 @@ func (s *Server) repairLinkEndpoints() {
 			listenEp.PersistentKeepalive = 25
 			changed = true
 		}
+		// Clear reverse endpoint if it points at a private/LAN address (breaks public→NAT peers).
+		if listenEp.PeerEndpoint != nil && *listenEp.PeerEndpoint != "" {
+			host, _, err := net.SplitHostPort(*listenEp.PeerEndpoint)
+			if err != nil {
+				host = *listenEp.PeerEndpoint
+			}
+			if !netutil.IsPublicDialable(host) {
+				listenEp.PeerEndpoint = nil
+				changed = true
+			}
+		}
+		// Only add reverse dial when initiator has a public advertise address.
 		if (listenEp.PeerEndpoint == nil || *listenEp.PeerEndpoint == "") && initEp.ListenPort > 0 {
 			addrs, _ := s.db.ListNodeAddresses(initEp.NodeID)
-			if len(addrs) > 0 {
-				ep := fmt.Sprintf("%s:%d", addrs[0].Address, initEp.ListenPort)
-				listenEp.PeerEndpoint = &ep
-				changed = true
+			for _, a := range addrs {
+				if a.AddressType == "lan" {
+					continue
+				}
+				if netutil.IsPublicDialable(a.Address) {
+					ep := fmt.Sprintf("%s:%d", a.Address, initEp.ListenPort)
+					listenEp.PeerEndpoint = &ep
+					changed = true
+					break
+				}
 			}
 		}
 		if changed {

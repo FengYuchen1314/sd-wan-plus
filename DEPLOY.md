@@ -52,6 +52,12 @@ sudo ufw allow 14303:14399/udp
 
 云厂商安全组也需放行 **UDP 14303–14399**（监听端 / 父节点）。
 
+### 内网 / NAT 节点
+
+- 内网节点应选择「无公网 IP」，由**本机主动拨**公网父节点；公网侧**不会**把 `192.168.x.x` 写成 Endpoint。
+- 内网节点与**另一个公网节点**互通：在「链路」里新建链路，**发起方选内网节点**，监听地址填公网节点公网 IP。
+- 仅注册成功、节点列表可见，不等于 overlay 已通；需 `pwl-*` 接口存在且握手完成后再 ping overlay。
+
 ### 数据面（wireguard-go）
 
 - Overlay 由各节点上的 **pathweaver-netd** 内嵌 **wireguard-go**（userspace）维护，**不依赖**内核 WireGuard 模块或 `wireguard-tools`。

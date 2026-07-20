@@ -12,6 +12,7 @@ import (
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/artifacts"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/netutil"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/security"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -193,7 +194,13 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	addrs, _ := s.db.ListNodeAddresses(parent.ID)
 	listenerAddr := s.cfg.PublicAddress
-	if len(addrs) > 0 {
+	for _, a := range addrs {
+		if netutil.IsPublicDialable(a.Address) {
+			listenerAddr = a.Address
+			break
+		}
+	}
+	if listenerAddr == "" && len(addrs) > 0 {
 		listenerAddr = addrs[0].Address
 	}
 	ifaceA := storage.InterfaceName(parent.ID, node.ID)
@@ -205,8 +212,10 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		Enabled: true, AdminWeight: 1, Status: core.LinkActive,
 	}
 	_ = s.db.CreateLink(link)
+	// 仅当子节点 advertise 为公网可达时，父节点才写反向 Endpoint。
+	// 内网 IP 写进去会导致公网侧拨私网失败，甚至干扰握手学习。
 	parentToChild := ""
-	if adv != "" {
+	if adv != "" && (addrType == "public" || body.HasPublicIP) && netutil.IsPublicDialable(adv) {
 		parentToChild = fmt.Sprintf("%s:%d", adv, portI)
 	}
 	var parentEP *string
