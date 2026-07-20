@@ -22,6 +22,7 @@ func TestBuildUAPIInitiator(t *testing.T) {
 		LinkID: "l1", InterfaceName: "pwl-test", IsInitiator: true,
 		NodePrivateKey: priv, PeerPublicKey: peerPub,
 		PeerEndpoint: "1.2.3.4:14303", PeerOverlayIP: "10.250.0.2",
+		AllowedIPs: []string{"10.250.0.2/32"},
 		PersistentKeepalive: 25,
 	})
 	if err != nil {

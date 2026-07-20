@@ -161,12 +161,8 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 			continue
 		}
 		_ = run("ip", "link", "set", l.InterfaceName, "up")
-		// Host routes for every AllowedIP (peer + transit overlay destinations).
-		ips := l.AllowedIPs
-		if len(ips) == 0 && l.PeerOverlayIP != "" {
-			ips = []string{l.PeerOverlayIP + "/32"}
-		}
-		for _, dest := range ips {
+		// Host routes only for AllowedIPs from compile (control-tree next hops).
+		for _, dest := range l.AllowedIPs {
 			dest = strings.TrimSpace(dest)
 			if dest == "" {
 				continue
@@ -184,9 +180,7 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 		}
 	}
 
-	if st.ForwardingSettings.IPv4Forwarding {
-		_ = run("sysctl", "-w", "net.ipv4.ip_forward=1")
-	}
+	enableOverlayForwarding(st)
 
 	for _, r := range st.PolicyRules {
 		_ = run("ip", "rule", "add", "fwmark", fmt.Sprintf("%d", r.Fwmark), "table", fmt.Sprintf("%d", r.TableID), "priority", fmt.Sprintf("%d", r.Priority+100))
@@ -205,6 +199,50 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 		}
 	}
 	return nil
+}
+
+// enableOverlayForwarding turns on IP forward and relaxes rp_filter so multi-hop
+// overlay via pwl-* works; opens iptables FORWARD for PathWeaver ifaces when present.
+func enableOverlayForwarding(st *core.NodeDesiredState) {
+	if st.ForwardingSettings.IPv4Forwarding {
+		_ = run("sysctl", "-w", "net.ipv4.ip_forward=1")
+	}
+	// Strict rp_filter drops asymmetric multi-hop overlay returns.
+	_ = run("sysctl", "-w", "net.ipv4.conf.all.rp_filter=0")
+	_ = run("sysctl", "-w", "net.ipv4.conf.default.rp_filter=0")
+	_ = run("sysctl", "-w", "net.ipv4.conf.all.accept_local=1")
+	ifaces := []string{st.OverlayIdentity.DummyInterface}
+	for _, l := range st.WireGuardLinks {
+		if l.InterfaceName != "" {
+			ifaces = append(ifaces, l.InterfaceName)
+		}
+	}
+	for _, iface := range ifaces {
+		if iface == "" {
+			continue
+		}
+		_ = run("sysctl", "-w", "net.ipv4.conf."+iface+".rp_filter=0")
+		_ = run("sysctl", "-w", "net.ipv4.conf."+iface+".forwarding=1")
+	}
+	// Best-effort: many cloud images DROP FORWARD by default.
+	if _, err := exec.LookPath("iptables"); err != nil {
+		return
+	}
+	ensureForwardAccept := func(iface string) {
+		if iface == "" {
+			return
+		}
+		if err := run("iptables", "-C", "FORWARD", "-i", iface, "-j", "ACCEPT"); err != nil {
+			_ = run("iptables", "-I", "FORWARD", "1", "-i", iface, "-j", "ACCEPT")
+		}
+		if err := run("iptables", "-C", "FORWARD", "-o", iface, "-j", "ACCEPT"); err != nil {
+			_ = run("iptables", "-I", "FORWARD", "1", "-o", iface, "-j", "ACCEPT")
+		}
+	}
+	ensureForwardAccept(st.OverlayIdentity.DummyInterface)
+	for _, l := range st.WireGuardLinks {
+		ensureForwardAccept(l.InterfaceName)
+	}
 }
 
 func run(name string, args ...string) error {

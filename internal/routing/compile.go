@@ -113,14 +113,13 @@ func Compile(db *storage.DB, generation uint64, box interface {
 			if cfg.PersistentKeepalive == 0 && cfg.PeerEndpoint != "" {
 				cfg.PersistentKeepalive = 25
 			}
-			if peer.OverlayIPv4 != "" {
-				cfg.AllowedIPs = append(cfg.AllowedIPs, ensureHostCIDR(peer.OverlayIPv4))
-			}
+			// AllowedIPs filled only via ControlNextHop below (backbone tree),
+			// so mesh shortcuts cannot steal overlay /32s from the tree path.
 			linkIdx[l.ID] = len(st.WireGuardLinks)
 			st.WireGuardLinks = append(st.WireGuardLinks, cfg)
 		}
 
-		// Overlay multi-hop along control-tree backbone only.
+		// Overlay reachability: every remote overlay /32 via control-tree next hop only.
 		for _, m := range g.Nodes {
 			if m.ID == n.ID || m.OverlayIPv4 == "" {
 				continue
