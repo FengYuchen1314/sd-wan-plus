@@ -18,7 +18,14 @@ var NodeBinaries = []string{
 	"pathweaver-cli",
 	"pathweaver-controller",
 	"install-node.sh",
-	"manifest.json",
+}
+
+// OptionalArtifacts may be absent; prefetch should not fail the whole job.
+var OptionalArtifacts = map[string]bool{
+	"manifest.json":     true,
+	"install-node.sh":   true,
+	"pathweaver-cli":    true,
+	"pathweaver-controller": true,
 }
 
 // Store is a local artifact cache. Misses are fetched from ParentURL.

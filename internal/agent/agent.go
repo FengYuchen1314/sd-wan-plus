@@ -302,7 +302,11 @@ func (a *Agent) prefetch(version string, files []string) error {
 		name = filepath.Base(name)
 		p, err := a.store.Ensure(name)
 		if err != nil {
-			return err
+			if artifacts.OptionalArtifacts[name] {
+				log.Printf("prefetch skip optional %s: %v", name, err)
+				continue
+			}
+			return fmt.Errorf("%s: %w", name, err)
 		}
 		dst := filepath.Join(relDir, name)
 		in, err := os.Open(p)

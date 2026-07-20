@@ -80,44 +80,64 @@ func (s *Server) fetchGitHubLatest() (*latestReleaseInfo, error) {
 	var downloadURL, assetName string
 	version := ""
 	verRe := regexp.MustCompile(`pathweaver-(.+)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
+	commit := ""
+	if m := regexp.MustCompile(`(?i)Commit:\s*([0-9a-f]{7,40})`).FindStringSubmatch(rel.Body); len(m) == 2 {
+		commit = m[1]
+	}
+	short := commit
+	if len(short) > 7 {
+		short = short[:7]
+	}
 	for _, a := range rel.Assets {
 		if a.Name == stable {
 			downloadURL = a.BrowserDownloadURL
 			assetName = a.Name
 		}
 		if m := verRe.FindStringSubmatch(a.Name); len(m) == 2 && !strings.HasPrefix(m[1], "linux") {
-			version = m[1]
-			if downloadURL == "" {
-				downloadURL = a.BrowserDownloadURL
-				assetName = a.Name
+			// Prefer asset matching release commit
+			if short != "" && strings.Contains(m[1], short) {
+				version = m[1]
+				if downloadURL == "" {
+					downloadURL = a.BrowserDownloadURL
+					assetName = a.Name
+				}
+			} else if version == "" {
+				version = m[1]
+				if downloadURL == "" {
+					downloadURL = a.BrowserDownloadURL
+					assetName = a.Name
+				}
 			}
 		}
 	}
 	if downloadURL == "" {
 		return nil, fmt.Errorf("release 中未找到 linux-%s 安装包", goarch)
 	}
-	commit := ""
-	if m := regexp.MustCompile(`(?i)Commit:\s*([0-9a-f]{7,40})`).FindStringSubmatch(rel.Body); len(m) == 2 {
-		commit = m[1]
-	}
 	if version == "" {
-		if commit != "" {
-			version = "0.1.0-" + commit
-			if len(commit) > 7 {
-				version = "0.1.0-" + commit[:7]
-			}
+		if short != "" {
+			version = "0.1.0-" + short
 		} else if rel.PublishedAt != "" {
 			version = "latest-" + strings.ReplaceAll(rel.PublishedAt[:10], "-", "")
 		} else {
 			version = "latest"
 		}
 	}
+	// Canonicalize to commit-based version when body has Commit:
+	if short != "" {
+		version = "0.1.0-" + short
+	}
 
 	cur := core.ProductVersion
+	outdated := version != "" && version != cur
+	if short != "" && strings.Contains(cur, short) {
+		outdated = false
+		version = cur // display the running build when it matches latest commit
+	}
+
 	return &latestReleaseInfo{
 		Version: version, Tag: rel.TagName, PublishedAt: rel.PublishedAt,
 		AssetName: assetName, DownloadURL: downloadURL,
-		CurrentVersion: cur, Outdated: version != cur,
+		CurrentVersion: cur, Outdated: outdated,
 		Commit: commit,
 	}, nil
 }
