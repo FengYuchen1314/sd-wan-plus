@@ -56,8 +56,14 @@ echo ""
 read -rp "确认继续? [Y/n] " yn; [ "$yn" = "n" ] && exit 0
 
 log "安装系统依赖..."
-apt-get update -qq
-apt-get install -y -qq python3 python3-pip python3-venv curl wireguard-tools nftables
+export DEBIAN_FRONTEND=noninteractive
+echo "  更新软件包列表..."
+apt-get update -qq -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 || warn "apt update 失败，继续尝试安装"
+echo "  安装: python3 python3-pip python3-venv curl wireguard-tools nftables"
+apt-get install -y -qq --no-install-recommends python3 python3-pip python3-venv curl wireguard-tools nftables || {
+    err "系统依赖安装失败，请检查网络和 apt 源"
+    exit 1
+}
 
 INSTALL_DIR="/opt/pathweaver"
 mkdir -p "$INSTALL_DIR/deps_cache"
