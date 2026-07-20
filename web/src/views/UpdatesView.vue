@@ -232,7 +232,7 @@ onUnmounted(() => {
   <div>
     <h1 class="page-title">更新中心</h1>
     <p class="page-sub">
-      自动从 GitHub Latest 拉取制品；沿控制树预分发，叶子优先安装。拓扑图实时显示各节点更新状态。
+      从 GitHub Latest 拉取制品；沿控制树预分发，叶子优先安装，主控最后替换并重启。版本号为 YYYY.MM.DD。
     </p>
 
     <div class="grid-stats" style="margin-bottom:1rem">

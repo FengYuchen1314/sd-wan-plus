@@ -329,9 +329,14 @@ func (s *Server) handleAgentUpdate(w http.ResponseWriter, r *http.Request) {
 	if st != nil {
 		depth, _ = s.db.NodeDepth(nodeID)
 	}
+	phase := job.Phase
+	// 主控由编排器本地安装并在任务结束后重启，避免中途 systemctl restart 清掉内存任务。
+	if st != nil && st.IsController && phase == "install" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	// During install phase, only nodes that finished prefetch get install orders;
 	// leaf-first: deeper nodes install first.
-	phase := job.Phase
 	if phase == "install" {
 		s.updateMu.Lock()
 		status := job.StatusByNode[nodeID]

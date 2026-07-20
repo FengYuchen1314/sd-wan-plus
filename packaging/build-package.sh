@@ -6,7 +6,7 @@ cd "$ROOT"
 
 GOOS=${GOOS:-linux}
 GOARCH=${GOARCH:-amd64}
-VERSION=${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo 0.1.0)}
+VERSION=${VERSION:-$(date -u +%Y.%m.%d)}
 OUT_DIR=${OUT_DIR:-dist}
 PKG_NAME="pathweaver-${VERSION}-${GOOS}-${GOARCH}"
 STAGE="$OUT_DIR/$PKG_NAME"

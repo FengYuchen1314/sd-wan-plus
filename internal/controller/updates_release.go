@@ -143,58 +143,51 @@ func (s *Server) fetchGitHubLatestUncached() (*latestReleaseInfo, error) {
 	stable := fmt.Sprintf("pathweaver-linux-%s.tar.gz", goarch)
 	var downloadURL, assetName string
 	version := ""
-	verRe := regexp.MustCompile(`pathweaver-(.+)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
+	// Prefer date versions: pathweaver-2026.07.20-linux-amd64.tar.gz
+	verRe := regexp.MustCompile(`pathweaver-(\d{4}\.\d{2}\.\d{2}(?:-[0-9a-f]+)?)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
+	legacyVerRe := regexp.MustCompile(`pathweaver-(.+)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
 	commit := ""
 	if m := regexp.MustCompile(`(?i)Commit:\s*([0-9a-f]{7,40})`).FindStringSubmatch(rel.Body); len(m) == 2 {
 		commit = m[1]
-	}
-	short := commit
-	if len(short) > 7 {
-		short = short[:7]
 	}
 	for _, a := range rel.Assets {
 		if a.Name == stable {
 			downloadURL = a.BrowserDownloadURL
 			assetName = a.Name
 		}
-		if m := verRe.FindStringSubmatch(a.Name); len(m) == 2 && !strings.HasPrefix(m[1], "linux") {
-			if short != "" && strings.Contains(m[1], short) {
+		if m := verRe.FindStringSubmatch(a.Name); len(m) == 2 {
+			version = m[1]
+			if downloadURL == "" {
+				downloadURL = a.BrowserDownloadURL
+				assetName = a.Name
+			}
+		}
+	}
+	if version == "" {
+		for _, a := range rel.Assets {
+			if m := legacyVerRe.FindStringSubmatch(a.Name); len(m) == 2 && !strings.HasPrefix(m[1], "linux") {
 				version = m[1]
 				if downloadURL == "" {
 					downloadURL = a.BrowserDownloadURL
 					assetName = a.Name
 				}
-			} else if version == "" {
-				version = m[1]
-				if downloadURL == "" {
-					downloadURL = a.BrowserDownloadURL
-					assetName = a.Name
-				}
+				break
 			}
 		}
 	}
 	if downloadURL == "" {
 		return nil, fmt.Errorf("release 中未找到 linux-%s 安装包", goarch)
 	}
-	if version == "" {
-		if short != "" {
-			version = "0.1.0-" + short
-		} else if rel.PublishedAt != "" {
-			version = "latest-" + strings.ReplaceAll(rel.PublishedAt[:10], "-", "")
-		} else {
-			version = "latest"
-		}
+	// Default version name: YYYY.MM.DD from publish time
+	if version == "" && rel.PublishedAt != "" && len(rel.PublishedAt) >= 10 {
+		version = strings.ReplaceAll(rel.PublishedAt[:10], "-", ".")
 	}
-	if short != "" {
-		version = "0.1.0-" + short
+	if version == "" {
+		version = time.Now().UTC().Format("2006.01.02")
 	}
 
 	cur := core.ProductVersion
 	outdated := version != "" && version != cur
-	if short != "" && strings.Contains(cur, short) {
-		outdated = false
-		version = cur
-	}
 
 	return &latestReleaseInfo{
 		Version: version, Tag: rel.TagName, PublishedAt: rel.PublishedAt,
@@ -359,14 +352,16 @@ func (s *Server) handlePullLatest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 关键：把主控二进制/前端落到 /opt/pathweaver 并重启 pathweaver。
-	// 以前只写入制品缓存，正在运行的 controller 仍是旧进程，bootstrap/install.sh 也仍是旧逻辑。
-	appliedLocal := false
-	if err := s.applyLocalRelease(binDir, pkgRoot); err != nil {
-		log.Printf("apply local release: %v", err)
-	} else {
-		appliedLocal = true
-		s.scheduleControllerRestart()
+	// 前端可热更新；主控二进制等任务安装阶段末尾再替换并重启，避免中途杀掉更新编排。
+	root := filepath.Clean(filepath.Join(s.cfg.DataDir, ".."))
+	if root == "" || root == "." || root == "/" {
+		root = "/opt/pathweaver"
+	}
+	webSrc := filepath.Join(pkgRoot, "web")
+	if st, err := os.Stat(webSrc); err == nil && st.IsDir() {
+		if err := copyDirSimple(webSrc, filepath.Join(root, "web")); err != nil {
+			log.Printf("copy web during pull-latest: %v", err)
+		}
 	}
 
 	job, err := s.db.CreateUpdateJob(info.Version, info.Commit)
@@ -392,20 +387,26 @@ func (s *Server) handlePullLatest(w http.ResponseWriter, r *http.Request) {
 
 	s.notify("updates", map[string]any{
 		"job_id": job.ID, "target_version": info.Version, "pulled": true, "started": started,
-		"controller_restart_scheduled": appliedLocal,
 	})
 
-	note := "已写入制品缓存"
-	if appliedLocal {
-		note += "；主控二进制已替换，约 2 秒后重启 pathweaver（新安装脚本才会生效）"
-	} else {
-		note += "；主控进程未自动替换，请手动: sudo systemctl restart pathweaver"
-	}
+	note := "已写入制品缓存；叶子节点先更新，主控最后替换二进制并重启"
 	writeJSON(w, 200, map[string]any{
 		"job": job, "latest": info, "started": started,
-		"controller_restart_scheduled": appliedLocal,
-		"note":                         note,
+		"note": note,
 	})
+}
+
+// installControllerRelease applies staged release bins onto the controller install root.
+func (s *Server) installControllerRelease(version string) error {
+	if s.store == nil {
+		return fmt.Errorf("artifact store unavailable")
+	}
+	binDir := filepath.Join(s.store.Dir, "releases", version)
+	if st, err := os.Stat(binDir); err != nil || !st.IsDir() {
+		return fmt.Errorf("release %s not staged at %s", version, binDir)
+	}
+	pkgRoot := filepath.Clean(filepath.Join(s.cfg.DataDir, ".."))
+	return s.applyLocalRelease(binDir, pkgRoot)
 }
 
 // applyLocalRelease copies package bins (+ optional web) into the install root next to DataDir.

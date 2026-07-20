@@ -7,8 +7,8 @@ const (
 	DefaultUsername = "admin"
 )
 
-// ProductVersion is overridden at link time by release builds (-X ...ProductVersion=).
-var ProductVersion = "0.1.0"
+// ProductVersion is overridden at link time by release builds (-X ...ProductVersion=YYYY.MM.DD).
+var ProductVersion = "dev"
 
 // Config rollout statuses
 const (

@@ -428,11 +428,28 @@ func (s *Server) handleStartUpdate(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget) {
 	files := artifacts.NodeBinaries
-	// Phase 1: prefetch — all nodes pull from parent (controller is origin)
+	statusByNode := map[string]string{}
+	for _, t := range targets {
+		if t.Status != "" && t.Status != core.UpdateWaiting {
+			statusByNode[t.NodeID] = t.Status
+		}
+	}
+	// 主控是制品源：预取阶段直接视为已就绪，不依赖 agent 自拉。
+	for _, t := range targets {
+		n, err := s.db.GetNode(t.NodeID)
+		if err != nil || n == nil || !n.IsController {
+			continue
+		}
+		if statusByNode[t.NodeID] != core.UpdateCompleted && statusByNode[t.NodeID] != core.UpdateInstallFailed {
+			statusByNode[t.NodeID] = core.UpdateStaged
+			_ = s.db.UpdateTargetStatus(t.ID, core.UpdateStaged, "")
+		}
+	}
+
 	s.updateMu.Lock()
 	s.activeUpdate = &activeUpdateJob{
 		JobID: jobID, TargetVersion: version, Phase: "prefetch",
-		Files: files, StatusByNode: map[string]string{},
+		Files: files, StatusByNode: statusByNode,
 	}
 	s.updateMu.Unlock()
 	s.notify("updates", map[string]any{"job_id": jobID, "phase": "prefetch"})
@@ -449,9 +466,15 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 			}
 			online := n.LastSeenAt != nil && time.Since(*n.LastSeenAt) < 2*time.Minute
 			s.updateMu.Lock()
-			st := s.activeUpdate.StatusByNode[t.NodeID]
+			st := ""
+			if s.activeUpdate != nil {
+				st = s.activeUpdate.StatusByNode[t.NodeID]
+			}
 			s.updateMu.Unlock()
-			if online && st != core.UpdateStaged && st != core.UpdateCompleted {
+			if st == "" {
+				st = t.Status
+			}
+			if online && st != core.UpdateStaged && st != core.UpdateCompleted && st != core.UpdateInstallFailed {
 				allStaged = false
 				onlinePending++
 			}
@@ -464,7 +487,6 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 		targets, _ = s.db.ListUpdateTargets(jobID)
 	}
 
-	// Phase 2: install leaf-first (targets already ordered depth DESC)
 	s.updateMu.Lock()
 	if s.activeUpdate != nil {
 		s.activeUpdate.Phase = "install"
@@ -474,8 +496,31 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 	s.broadcastUpdateProgress(jobID)
 
 	targets, _ = s.db.ListUpdateTargets(jobID)
+	needControllerRestart := false
 	for _, t := range targets {
-		// wait until this node reports completed or timeout
+		if t.Status == core.UpdateCompleted || t.Status == core.UpdateInstallFailed || t.Status == core.UpdateRolledBack {
+			s.updateMu.Lock()
+			if s.activeUpdate != nil {
+				s.activeUpdate.StatusByNode[t.NodeID] = t.Status
+			}
+			s.updateMu.Unlock()
+			continue
+		}
+		n, _ := s.db.GetNode(t.NodeID)
+		if n != nil && n.IsController {
+			s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateInstalling, "")
+			if err := s.installControllerRelease(version); err != nil {
+				log.Printf("controller install %s: %v", version, err)
+				s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateInstallFailed, err.Error())
+			} else {
+				_ = s.db.TouchNodeSeen(n.ID, version, n.ActiveGeneration)
+				s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateCompleted, "")
+				needControllerRestart = true
+			}
+			s.broadcastUpdateProgress(jobID)
+			continue
+		}
+
 		waitUntil := time.Now().Add(3 * time.Minute)
 		for time.Now().Before(waitUntil) {
 			s.updateMu.Lock()
@@ -487,8 +532,7 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 			if st == core.UpdateCompleted || st == core.UpdateInstallFailed || st == core.UpdateRolledBack {
 				break
 			}
-			// mark staged nodes ready to install by ensuring they see install phase
-			if st == core.UpdateStaged || st == "" {
+			if st == core.UpdateStaged || st == "" || st == core.UpdateInstalling || st == core.UpdatePrefetching {
 				time.Sleep(1 * time.Second)
 				s.broadcastUpdateProgress(jobID)
 				continue
@@ -504,6 +548,68 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 	s.updateMu.Unlock()
 	s.notify("updates", map[string]any{"job_id": jobID, "status": "Completed"})
 	s.broadcastUpdateProgress(jobID)
+
+	if needControllerRestart {
+		log.Printf("update job %s finished; restarting controller to load %s", jobID, version)
+		s.scheduleControllerRestart()
+	}
+}
+
+func (s *Server) setUpdateNodeStatus(jobID, nodeID, targetID, status, errMsg string) {
+	if targetID != "" {
+		_ = s.db.UpdateTargetStatus(targetID, status, errMsg)
+	}
+	s.updateMu.Lock()
+	if s.activeUpdate != nil && s.activeUpdate.JobID == jobID {
+		if s.activeUpdate.StatusByNode == nil {
+			s.activeUpdate.StatusByNode = map[string]string{}
+		}
+		s.activeUpdate.StatusByNode[nodeID] = status
+	}
+	s.updateMu.Unlock()
+}
+
+// resumeOrFinalizeUpdates continues a Running job after controller restart, or closes it if done.
+func (s *Server) resumeOrFinalizeUpdates() {
+	time.Sleep(2 * time.Second)
+	jobs, err := s.db.ListUpdateJobs()
+	if err != nil {
+		return
+	}
+	for _, j := range jobs {
+		if j.Status != "Running" {
+			continue
+		}
+		targets, err := s.db.ListUpdateTargets(j.ID)
+		if err != nil {
+			continue
+		}
+		pending := false
+		for _, t := range targets {
+			switch t.Status {
+			case core.UpdateCompleted, core.UpdateInstallFailed, core.UpdateRolledBack,
+				core.UpdateDownloadFailed, core.UpdateSignatureInvalid, core.UpdateHealthFailed:
+				continue
+			default:
+				pending = true
+			}
+		}
+		if !pending {
+			_ = s.db.UpdateJobStatus(j.ID, "Completed")
+			log.Printf("finalized update job %s after restart (all targets terminal)", j.ID)
+			s.notify("updates", map[string]any{"job_id": j.ID, "status": "Completed"})
+			return
+		}
+		s.updateMu.Lock()
+		busy := s.activeUpdate != nil
+		s.updateMu.Unlock()
+		if busy {
+			return
+		}
+		log.Printf("resuming update job %s (%s)", j.ID, j.TargetVersion)
+		go s.runUpdateJob(j.ID, j.TargetVersion, targets)
+		return
+	}
 }
 
 func (s *Server) broadcastUpdateProgress(jobID string) {
