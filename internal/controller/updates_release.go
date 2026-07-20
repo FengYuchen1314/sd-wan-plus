@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -341,14 +343,13 @@ func (s *Server) handlePullLatest(w http.ResponseWriter, r *http.Request) {
 	}
 
 	files := artifacts.NodeBinaries
+	pkgRoot := filepath.Dir(binDir)
 	if s.store != nil {
 		_ = s.store.Seed(binDir, files)
 		if err := s.store.SeedRelease(info.Version, binDir); err != nil {
 			writeJSON(w, 500, map[string]string{"message": "写入制品缓存失败: " + err.Error()})
 			return
 		}
-		// also stage install.sh if present next to bin
-		pkgRoot := filepath.Dir(binDir)
 		for _, name := range []string{"install.sh", "install-node.sh"} {
 			src := filepath.Join(pkgRoot, name)
 			if st, err := os.Stat(src); err == nil && !st.IsDir() {
@@ -356,6 +357,16 @@ func (s *Server) handlePullLatest(w http.ResponseWriter, r *http.Request) {
 				_ = copyFileSimple(src, filepath.Join(s.store.Dir, "releases", info.Version, "install-node.sh"))
 			}
 		}
+	}
+
+	// 关键：把主控二进制/前端落到 /opt/pathweaver 并重启 pathweaver。
+	// 以前只写入制品缓存，正在运行的 controller 仍是旧进程，bootstrap/install.sh 也仍是旧逻辑。
+	appliedLocal := false
+	if err := s.applyLocalRelease(binDir, pkgRoot); err != nil {
+		log.Printf("apply local release: %v", err)
+	} else {
+		appliedLocal = true
+		s.scheduleControllerRestart()
 	}
 
 	job, err := s.db.CreateUpdateJob(info.Version, info.Commit)
@@ -381,11 +392,82 @@ func (s *Server) handlePullLatest(w http.ResponseWriter, r *http.Request) {
 
 	s.notify("updates", map[string]any{
 		"job_id": job.ID, "target_version": info.Version, "pulled": true, "started": started,
+		"controller_restart_scheduled": appliedLocal,
 	})
 
+	note := "已写入制品缓存"
+	if appliedLocal {
+		note += "；主控二进制已替换，约 2 秒后重启 pathweaver（新安装脚本才会生效）"
+	} else {
+		note += "；主控进程未自动替换，请手动: sudo systemctl restart pathweaver"
+	}
 	writeJSON(w, 200, map[string]any{
 		"job": job, "latest": info, "started": started,
-		"note": "已从 GitHub Latest 拉取并写入控制机制品缓存；子节点仅从父节点拉取",
+		"controller_restart_scheduled": appliedLocal,
+		"note":                         note,
+	})
+}
+
+// applyLocalRelease copies package bins (+ optional web) into the install root next to DataDir.
+func (s *Server) applyLocalRelease(binDir, pkgRoot string) error {
+	root := filepath.Clean(filepath.Join(s.cfg.DataDir, ".."))
+	if root == "" || root == "." || root == "/" {
+		root = "/opt/pathweaver"
+	}
+	destBin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(destBin, 0o755); err != nil {
+		return err
+	}
+	names := append([]string{"pathweaver-controller"}, artifacts.NodeBinaries...)
+	seen := map[string]bool{}
+	for _, name := range names {
+		name = filepath.Base(name)
+		if seen[name] || name == "install-node.sh" {
+			continue
+		}
+		seen[name] = true
+		src := filepath.Join(binDir, name)
+		if _, err := os.Stat(src); err != nil {
+			continue
+		}
+		if err := copyFileSimple(src, filepath.Join(destBin, name)); err != nil {
+			return fmt.Errorf("copy %s: %w", name, err)
+		}
+	}
+	webSrc := filepath.Join(pkgRoot, "web")
+	if st, err := os.Stat(webSrc); err == nil && st.IsDir() {
+		if err := copyDirSimple(webSrc, filepath.Join(root, "web")); err != nil {
+			log.Printf("copy web: %v", err)
+		}
+	}
+	return nil
+}
+
+func (s *Server) scheduleControllerRestart() {
+	go func() {
+		time.Sleep(2 * time.Second)
+		log.Printf("restarting pathweaver after local release apply")
+		_ = exec.Command("systemctl", "restart", "pathweaver").Run()
+	}()
+}
+
+func copyDirSimple(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		return copyFileSimple(path, target)
 	})
 }
 

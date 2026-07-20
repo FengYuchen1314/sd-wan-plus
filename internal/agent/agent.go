@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -309,7 +310,24 @@ func (a *Agent) pollUpdate() {
 			return
 		}
 		_ = a.reportUpdate(u.JobID, core.UpdateCompleted, "")
+		a.scheduleServiceRestart()
 	}
+}
+
+func (a *Agent) scheduleServiceRestart() {
+	go func() {
+		time.Sleep(2 * time.Second)
+		units := []string{"pathweaver-netd", "pathweaver-updater", "pathweaver-agent"}
+		// 控制机还要重启主控（安装脚本嵌在 controller 进程里）
+		if _, err := os.Stat(filepath.Join(a.cfg.Root, "bin", "pathweaver-controller")); err == nil {
+			if exec.Command("systemctl", "cat", "pathweaver").Run() == nil {
+				units = append([]string{"pathweaver"}, units...)
+			}
+		}
+		log.Printf("restarting services after update: %v", units)
+		args := append([]string{"restart"}, units...)
+		_ = exec.Command("systemctl", args...).Run()
+	}()
 }
 
 func (a *Agent) prefetch(version string, files []string) error {
