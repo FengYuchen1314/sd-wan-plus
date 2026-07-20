@@ -53,10 +53,9 @@ curl -fL --retry 3 --retry-delay 2 -o "$TMP/pathweaver.tar.gz" "$DOWNLOAD_URL"
 
 echo "[3/4] 解压..."
 tar -xzf "$TMP/pathweaver.tar.gz" -C "$TMP"
-find "$TMP" -maxdepth 2 -type f -name install.sh | head -n1 | xargs -I{} dirname {}
-PKG_DIR=$(find "$TMP" -maxdepth 2 -type f -name install.sh | head -n1 | xargs -r dirname)
-
-[[ -n "$PKG_DIR" ]] || { echo "安装包内缺少 install.sh"; exit 1; }
+INSTALL_SH=$(find "$TMP" -maxdepth 3 -type f -name install.sh | head -n1)
+[[ -n "$INSTALL_SH" ]] || { echo "安装包内缺少 install.sh"; exit 1; }
+PKG_DIR=$(dirname "$INSTALL_SH")
 
 echo "[4/4] 执行控制机安装..."
 ARGS=(--role controller --name "$CTRL_NAME")
