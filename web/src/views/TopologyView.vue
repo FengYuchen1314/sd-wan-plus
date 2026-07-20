@@ -69,14 +69,14 @@ async function load() {
 async function createLink() {
   if (selected.value.length !== 2) return
   const [a, b] = selected.value
-  const addr = prompt('被访问端可达 IP/域名（监听端）')
+  const addr = prompt('被动端可达 IP/域名（默认单向：先选节点主动拨后选节点）')
   if (!addr) return
   try {
     await api.createLink({
       node_a: a, node_b: b, initiator_node_id: a,
-      listener_address: addr, enabled: true,
+      listener_address: addr, enabled: true, bidirectional: false,
     })
-    msg.value = '链路已创建'
+    msg.value = '链路已创建（单向）'
     await load()
   } catch (e: any) {
     error.value = e.message

@@ -176,6 +176,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		ListenerAddress string `json:"listener_address"`
 		AdminWeight     int    `json:"admin_weight"`
 		Enabled         bool   `json:"enabled"`
+		Bidirectional   bool   `json:"bidirectional"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, 400, map[string]string{"message": err.Error()})
@@ -195,21 +196,37 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		listener = body.NodeA
 	}
 	initiator := body.InitiatorNodeID
-	portL, err := s.db.AllocateWGPort(listener)
-	if err != nil {
-		writeJSON(w, 400, map[string]string{"message": err.Error()})
-		return
-	}
-	portI, err := s.db.AllocateWGPort(initiator)
-	if err != nil {
-		writeJSON(w, 400, map[string]string{"message": err.Error()})
-		return
-	}
 	na, _ := s.db.GetNode(body.NodeA)
 	nb, _ := s.db.GetNode(body.NodeB)
 	if na == nil || nb == nil {
 		writeJSON(w, 404, map[string]string{"message": "node not found"})
 		return
+	}
+	initAdv := s.nodePublicAdvertise(initiator)
+	listenAdv := body.ListenerAddress
+	if !netutil.IsPublicDialable(listenAdv) {
+		if alt := s.nodePublicAdvertise(listener); alt != "" {
+			listenAdv = alt
+		}
+	}
+	if body.Bidirectional {
+		if !netutil.IsPublicDialable(listenAdv) || initAdv == "" {
+			writeJSON(w, 400, map[string]string{"message": "bidirectional requires both nodes to have public dialable addresses"})
+			return
+		}
+	}
+	portL, err := s.db.AllocateWGPort(listener)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"message": err.Error()})
+		return
+	}
+	portI := 0
+	if body.Bidirectional {
+		portI, err = s.db.AllocateWGPort(initiator)
+		if err != nil {
+			writeJSON(w, 400, map[string]string{"message": err.Error()})
+			return
+		}
 	}
 	weight := body.AdminWeight
 	if weight <= 0 {
@@ -217,51 +234,48 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 	link := &core.WireGuardLink{
 		NodeA: body.NodeA, NodeB: body.NodeB, InitiatorNodeID: body.InitiatorNodeID,
-		ListenerNodeID: listener, ListenerAddress: body.ListenerAddress, ListenerPort: portL,
+		ListenerNodeID: listener, ListenerAddress: listenAdv, ListenerPort: portL,
 		InterfaceNameA: storage.InterfaceName(body.NodeA, body.NodeB),
 		InterfaceNameB: storage.InterfaceName(body.NodeB, body.NodeA),
-		Enabled: body.Enabled, AdminWeight: weight, Status: core.LinkPending,
+		Enabled: body.Enabled, Bidirectional: body.Bidirectional, AdminWeight: weight, Status: core.LinkPending,
 	}
 	if err := s.db.CreateLink(link); err != nil {
 		writeJSON(w, 500, map[string]string{"message": err.Error()})
 		return
 	}
-	// Dual-listen: initiator always dials listener. Reverse dial only if initiator is publicly reachable.
-	initAdv := ""
-	if addrs, _ := s.db.ListNodeAddresses(initiator); len(addrs) > 0 {
-		for _, a := range addrs {
-			if a.AddressType != "lan" && netutil.IsPublicDialable(a.Address) {
-				initAdv = a.Address
-				break
-			}
-		}
-	}
-	listenToInit := fmt.Sprintf("%s:%d", body.ListenerAddress, portL)
+	// 默认单向：initiator 拨 listener；仅手动 bidirectional 时双侧互拨。
+	listenToInit := fmt.Sprintf("%s:%d", listenAdv, portL)
 	epA := &core.WireGuardLinkEndpoint{
 		LinkID: link.ID, NodeID: body.NodeA, InterfaceName: link.InterfaceNameA,
-		PeerPublicKey: nb.WGPublicKey, PersistentKeepalive: 25,
-		IsInitiator: body.InitiatorNodeID == body.NodeA,
+		PeerPublicKey: nb.WGPublicKey, IsInitiator: body.InitiatorNodeID == body.NodeA,
 	}
 	epB := &core.WireGuardLinkEndpoint{
 		LinkID: link.ID, NodeID: body.NodeB, InterfaceName: link.InterfaceNameB,
-		PeerPublicKey: na.WGPublicKey, PersistentKeepalive: 25,
-		IsInitiator: body.InitiatorNodeID == body.NodeB,
+		PeerPublicKey: na.WGPublicKey, IsInitiator: body.InitiatorNodeID == body.NodeB,
 	}
 	var reverse *string
-	if initAdv != "" {
+	if body.Bidirectional && initAdv != "" && portI > 0 {
 		ep := fmt.Sprintf("%s:%d", initAdv, portI)
 		reverse = &ep
 	}
 	if body.InitiatorNodeID == body.NodeA {
-		epA.ListenPort = portI
 		epA.PeerEndpoint = &listenToInit
+		epA.PersistentKeepalive = 25
 		epB.ListenPort = portL
-		epB.PeerEndpoint = reverse
+		if body.Bidirectional {
+			epA.ListenPort = portI
+			epB.PeerEndpoint = reverse
+			epB.PersistentKeepalive = 25
+		}
 	} else {
-		epB.ListenPort = portI
 		epB.PeerEndpoint = &listenToInit
+		epB.PersistentKeepalive = 25
 		epA.ListenPort = portL
-		epA.PeerEndpoint = reverse
+		if body.Bidirectional {
+			epB.ListenPort = portI
+			epA.PeerEndpoint = reverse
+			epA.PersistentKeepalive = 25
+		}
 	}
 	_ = s.db.CreateLinkEndpoint(epA)
 	_ = s.db.CreateLinkEndpoint(epB)
@@ -284,17 +298,45 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleUpdateLink(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body struct {
-		Enabled *bool `json:"enabled"`
+		Enabled       *bool `json:"enabled"`
+		Bidirectional *bool `json:"bidirectional"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, 400, map[string]string{"message": err.Error()})
 		return
+	}
+	changed := false
+	if body.Bidirectional != nil {
+		link, err := s.db.GetLink(id)
+		if err != nil || link == nil {
+			writeJSON(w, 404, map[string]string{"message": "link not found"})
+			return
+		}
+		if *body.Bidirectional {
+			initAdv := s.nodePublicAdvertise(link.InitiatorNodeID)
+			listenAdv := link.ListenerAddress
+			if !netutil.IsPublicDialable(listenAdv) {
+				listenAdv = s.nodePublicAdvertise(link.ListenerNodeID)
+			}
+			if initAdv == "" || !netutil.IsPublicDialable(listenAdv) {
+				writeJSON(w, 400, map[string]string{"message": "bidirectional requires both nodes to have public dialable addresses"})
+				return
+			}
+		}
+		if err := s.db.SetLinkBidirectional(id, *body.Bidirectional); err != nil {
+			writeJSON(w, 500, map[string]string{"message": err.Error()})
+			return
+		}
+		changed = true
 	}
 	if body.Enabled != nil {
 		if err := s.db.SetLinkEnabled(id, *body.Enabled); err != nil {
 			writeJSON(w, 500, map[string]string{"message": err.Error()})
 			return
 		}
+		changed = true
+	}
+	if changed {
 		if _, err := s.publishConfig("auto after update link"); err != nil {
 			log.Printf("publish after update link: %v", err)
 		}

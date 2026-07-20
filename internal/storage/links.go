@@ -18,13 +18,17 @@ func (db *DB) CreateLink(l *core.WireGuardLink) error {
 	if l.Enabled {
 		en = 1
 	}
+	bi := 0
+	if l.Bidirectional {
+		bi = 1
+	}
 	_, err := db.SQL.Exec(`INSERT INTO wireguard_links(
 		id, node_a, node_b, initiator_node_id, listener_node_id, listener_address, listener_port,
-		interface_name_a, interface_name_b, enabled, admin_weight, last_handshake_a, last_handshake_b, status, created_at)
-		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		interface_name_a, interface_name_b, enabled, admin_weight, last_handshake_a, last_handshake_b, status, created_at, bidirectional)
+		VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 		l.ID, l.NodeA, l.NodeB, l.InitiatorNodeID, l.ListenerNodeID, l.ListenerAddress, l.ListenerPort,
 		l.InterfaceNameA, l.InterfaceNameB, en, l.AdminWeight, NullTime(l.LastHandshakeA), NullTime(l.LastHandshakeB),
-		l.Status, l.CreatedAt.Format(time.RFC3339))
+		l.Status, l.CreatedAt.Format(time.RFC3339), bi)
 	return err
 }
 
@@ -45,15 +49,16 @@ func (db *DB) CreateLinkEndpoint(e *core.WireGuardLinkEndpoint) error {
 
 func scanLink(row interface{ Scan(dest ...any) error }) (*core.WireGuardLink, error) {
 	var l core.WireGuardLink
-	var en int
+	var en, bi int
 	var hsA, hsB sql.NullString
 	var cAt string
 	err := row.Scan(&l.ID, &l.NodeA, &l.NodeB, &l.InitiatorNodeID, &l.ListenerNodeID, &l.ListenerAddress, &l.ListenerPort,
-		&l.InterfaceNameA, &l.InterfaceNameB, &en, &l.AdminWeight, &hsA, &hsB, &l.Status, &cAt)
+		&l.InterfaceNameA, &l.InterfaceNameB, &en, &l.AdminWeight, &hsA, &hsB, &l.Status, &cAt, &bi)
 	if err != nil {
 		return nil, err
 	}
 	l.Enabled = en == 1
+	l.Bidirectional = bi == 1
 	l.LastHandshakeA = ParseTime(hsA)
 	l.LastHandshakeB = ParseTime(hsB)
 	l.CreatedAt, _ = time.Parse(time.RFC3339, cAt)
@@ -62,7 +67,7 @@ func scanLink(row interface{ Scan(dest ...any) error }) (*core.WireGuardLink, er
 
 func (db *DB) ListLinks() ([]core.WireGuardLink, error) {
 	rows, err := db.SQL.Query(`SELECT id, node_a, node_b, initiator_node_id, listener_node_id, listener_address, listener_port,
-		interface_name_a, interface_name_b, enabled, admin_weight, last_handshake_a, last_handshake_b, status, created_at
+		interface_name_a, interface_name_b, enabled, admin_weight, last_handshake_a, last_handshake_b, status, created_at, COALESCE(bidirectional,0)
 		FROM wireguard_links ORDER BY created_at`)
 	if err != nil {
 		return nil, err
@@ -81,8 +86,17 @@ func (db *DB) ListLinks() ([]core.WireGuardLink, error) {
 
 func (db *DB) GetLink(id string) (*core.WireGuardLink, error) {
 	return scanLink(db.SQL.QueryRow(`SELECT id, node_a, node_b, initiator_node_id, listener_node_id, listener_address, listener_port,
-		interface_name_a, interface_name_b, enabled, admin_weight, last_handshake_a, last_handshake_b, status, created_at
+		interface_name_a, interface_name_b, enabled, admin_weight, last_handshake_a, last_handshake_b, status, created_at, COALESCE(bidirectional,0)
 		FROM wireguard_links WHERE id = ?`, id))
+}
+
+func (db *DB) SetLinkBidirectional(id string, bidirectional bool) error {
+	bi := 0
+	if bidirectional {
+		bi = 1
+	}
+	_, err := db.SQL.Exec(`UPDATE wireguard_links SET bidirectional = ? WHERE id = ?`, bi, id)
+	return err
 }
 
 func (db *DB) DeleteLink(id string) error {

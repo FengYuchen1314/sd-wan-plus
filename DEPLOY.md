@@ -76,7 +76,7 @@ ip route | grep -E '10\.250\.|pwl-'
 ping -c 3 -I <本机overlay> <对端overlay>
 ```
 
-升级主控/节点后请重启 `pathweaver` 与 `pathweaver-netd`，再在控制台**发布一次配置**（会自动把旧单向链路修成双侧 Listen+Endpoint）。
+升级主控/节点后请重启 `pathweaver` 与 `pathweaver-netd`，再在控制台**发布一次配置**（会把旧 dual-listen 链路修回默认单向；仅 `bidirectional=true` 的链路保留双侧互拨）。
 
 若 ping 出现 `Destination address required` / `Destination Host Unreachable`：
 

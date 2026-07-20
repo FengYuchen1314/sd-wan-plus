@@ -187,11 +187,6 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"message": err.Error()})
 		return
 	}
-	portI, err := s.db.AllocateWGPort(node.ID)
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"message": err.Error()})
-		return
-	}
 	addrs, _ := s.db.ListNodeAddresses(parent.ID)
 	listenerAddr := s.cfg.PublicAddress
 	for _, a := range addrs {
@@ -205,32 +200,23 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	ifaceA := storage.InterfaceName(parent.ID, node.ID)
 	ifaceB := storage.InterfaceName(node.ID, parent.ID)
+	// 入网链路默认单向：子节点主动拨父节点；父节点只 Listen，不写反向 Endpoint。
 	link := &core.WireGuardLink{
 		NodeA: parent.ID, NodeB: node.ID, InitiatorNodeID: node.ID, ListenerNodeID: parent.ID,
 		ListenerAddress: listenerAddr, ListenerPort: portL,
 		InterfaceNameA: ifaceA, InterfaceNameB: ifaceB,
-		Enabled: true, AdminWeight: 1, Status: core.LinkActive,
+		Enabled: true, Bidirectional: false, AdminWeight: 1, Status: core.LinkActive,
 	}
 	_ = s.db.CreateLink(link)
-	// 仅当子节点 advertise 为公网可达时，父节点才写反向 Endpoint。
-	// 内网 IP 写进去会导致公网侧拨私网失败，甚至干扰握手学习。
-	parentToChild := ""
-	if adv != "" && (addrType == "public" || body.HasPublicIP) && netutil.IsPublicDialable(adv) {
-		parentToChild = fmt.Sprintf("%s:%d", adv, portI)
-	}
-	var parentEP *string
-	if parentToChild != "" {
-		parentEP = &parentToChild
-	}
-	_ = s.db.CreateLinkEndpoint(&core.WireGuardLinkEndpoint{
-		LinkID: link.ID, NodeID: parent.ID, InterfaceName: ifaceA,
-		ListenPort: portL, PeerEndpoint: parentEP, PeerPublicKey: wgPub,
-		PersistentKeepalive: 25, IsInitiator: false,
-	})
 	childToParent := fmt.Sprintf("%s:%d", listenerAddr, portL)
 	_ = s.db.CreateLinkEndpoint(&core.WireGuardLinkEndpoint{
+		LinkID: link.ID, NodeID: parent.ID, InterfaceName: ifaceA,
+		ListenPort: portL, PeerEndpoint: nil, PeerPublicKey: wgPub,
+		PersistentKeepalive: 0, IsInitiator: false,
+	})
+	_ = s.db.CreateLinkEndpoint(&core.WireGuardLinkEndpoint{
 		LinkID: link.ID, NodeID: node.ID, InterfaceName: ifaceB,
-		ListenPort: portI, PeerEndpoint: &childToParent, PeerPublicKey: parent.WGPublicKey,
+		ListenPort: 0, PeerEndpoint: &childToParent, PeerPublicKey: parent.WGPublicKey,
 		PersistentKeepalive: 25, IsInitiator: true,
 	})
 

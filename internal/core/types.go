@@ -140,6 +140,7 @@ type WireGuardLink struct {
 	InterfaceNameA  string     `json:"interface_name_a"`
 	InterfaceNameB  string     `json:"interface_name_b"`
 	Enabled         bool       `json:"enabled"`
+	Bidirectional   bool       `json:"bidirectional"` // false=单向发起；true=双侧互拨（仅适合双公网）
 	AdminWeight     int        `json:"admin_weight"`
 	LastHandshakeA  *time.Time `json:"last_handshake_a,omitempty"`
 	LastHandshakeB  *time.Time `json:"last_handshake_b,omitempty"`

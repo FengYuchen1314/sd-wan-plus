@@ -75,7 +75,7 @@ func Compile(db *storage.DB, generation uint64, box interface {
 				OverlayIP:      n.OverlayIPv4,
 				PeerOverlayIP:  peer.OverlayIPv4,
 			}
-			// Prefer per-node endpoint rows (dual-listen + reverse dial)
+			// Prefer per-node endpoint rows (one-way by default; bidirectional when flagged)
 			if eps, err := db.ListLinkEndpoints(l.ID); err == nil {
 				for _, ep := range eps {
 					if ep.NodeID != n.ID {

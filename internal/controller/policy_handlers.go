@@ -3,7 +3,6 @@ package controller
 import (
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -202,7 +201,20 @@ func (s *Server) publishConfig(reason string) (*core.ConfigRevision, error) {
 	return rev, nil
 }
 
-// repairLinkEndpoints upgrades old one-way links to dual-listen so either side can dial.
+func (s *Server) nodePublicAdvertise(nodeID string) string {
+	addrs, _ := s.db.ListNodeAddresses(nodeID)
+	for _, a := range addrs {
+		if a.AddressType == "lan" {
+			continue
+		}
+		if netutil.IsPublicDialable(a.Address) {
+			return a.Address
+		}
+	}
+	return ""
+}
+
+// repairLinkEndpoints normalizes endpoints: default one-way; bidirectional only when flag set.
 func (s *Server) repairLinkEndpoints() {
 	links, err := s.db.ListLinks()
 	if err != nil {
@@ -225,50 +237,77 @@ func (s *Server) repairLinkEndpoints() {
 			continue
 		}
 		changed := false
-		if initEp.ListenPort <= 0 {
-			if p, err := s.db.AllocateWGPort(initEp.NodeID); err == nil {
-				initEp.ListenPort = p
-				changed = true
-			}
+		wantInitEP := fmt.Sprintf("%s:%d", l.ListenerAddress, l.ListenerPort)
+		if initEp.PeerEndpoint == nil || *initEp.PeerEndpoint != wantInitEP {
+			ep := wantInitEP
+			initEp.PeerEndpoint = &ep
+			changed = true
 		}
-		if initEp.PersistentKeepalive <= 0 {
+		if initEp.PersistentKeepalive != 25 {
 			initEp.PersistentKeepalive = 25
 			changed = true
 		}
-		if listenEp.PersistentKeepalive <= 0 {
-			listenEp.PersistentKeepalive = 25
+		if listenEp.ListenPort != l.ListenerPort && l.ListenerPort > 0 {
+			listenEp.ListenPort = l.ListenerPort
 			changed = true
 		}
-		// Clear reverse endpoint if it points at a private/LAN address (breaks public→NAT peers).
-		if listenEp.PeerEndpoint != nil && *listenEp.PeerEndpoint != "" {
-			host, _, err := net.SplitHostPort(*listenEp.PeerEndpoint)
-			if err != nil {
-				host = *listenEp.PeerEndpoint
+
+		if !l.Bidirectional {
+			if initEp.ListenPort != 0 {
+				initEp.ListenPort = 0
+				changed = true
 			}
-			if !netutil.IsPublicDialable(host) {
+			if listenEp.PeerEndpoint != nil {
 				listenEp.PeerEndpoint = nil
 				changed = true
 			}
-		}
-		// Only add reverse dial when initiator has a public advertise address.
-		if (listenEp.PeerEndpoint == nil || *listenEp.PeerEndpoint == "") && initEp.ListenPort > 0 {
-			addrs, _ := s.db.ListNodeAddresses(initEp.NodeID)
-			for _, a := range addrs {
-				if a.AddressType == "lan" {
-					continue
+			if listenEp.PersistentKeepalive != 0 {
+				listenEp.PersistentKeepalive = 0
+				changed = true
+			}
+		} else {
+			initAdv := s.nodePublicAdvertise(initEp.NodeID)
+			if initAdv == "" || !netutil.IsPublicDialable(l.ListenerAddress) {
+				// Cannot sustain bidirectional — fall back to one-way shape.
+				if initEp.ListenPort != 0 {
+					initEp.ListenPort = 0
+					changed = true
 				}
-				if netutil.IsPublicDialable(a.Address) {
-					ep := fmt.Sprintf("%s:%d", a.Address, initEp.ListenPort)
+				if listenEp.PeerEndpoint != nil {
+					listenEp.PeerEndpoint = nil
+					changed = true
+				}
+				if listenEp.PersistentKeepalive != 0 {
+					listenEp.PersistentKeepalive = 0
+					changed = true
+				}
+			} else {
+				if initEp.ListenPort <= 0 {
+					if p, err := s.db.AllocateWGPort(initEp.NodeID); err == nil {
+						initEp.ListenPort = p
+						changed = true
+					}
+				}
+				wantRev := fmt.Sprintf("%s:%d", initAdv, initEp.ListenPort)
+				if listenEp.PeerEndpoint == nil || *listenEp.PeerEndpoint != wantRev {
+					ep := wantRev
 					listenEp.PeerEndpoint = &ep
 					changed = true
-					break
+				}
+				if listenEp.PersistentKeepalive != 25 {
+					listenEp.PersistentKeepalive = 25
+					changed = true
 				}
 			}
 		}
 		if changed {
 			_ = s.db.UpdateLinkEndpoint(initEp)
 			_ = s.db.UpdateLinkEndpoint(listenEp)
-			log.Printf("repaired link endpoints for %s (dual-listen)", l.ID)
+			mode := "one-way"
+			if l.Bidirectional {
+				mode = "bidirectional"
+			}
+			log.Printf("repaired link endpoints for %s (%s)", l.ID, mode)
 		}
 	}
 }
