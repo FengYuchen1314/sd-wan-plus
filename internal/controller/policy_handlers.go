@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"log"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -151,20 +152,40 @@ func (s *Server) handleConfigPublish(w http.ResponseWriter, r *http.Request) {
 	if body.Reason == "" {
 		body.Reason = "manual publish"
 	}
-	gen, err := s.db.NextGeneration()
-	if err != nil {
-		writeJSON(w, 500, map[string]string{"message": err.Error()})
-		return
-	}
-	states, err := routing.Compile(s.db, uint64(gen), s.box)
+	rev, err := s.publishConfig(body.Reason)
 	if err != nil {
 		writeJSON(w, 400, map[string]string{"message": err.Error()})
 		return
 	}
-	rev, err := s.db.CreateConfigRevision(body.Reason, gen)
+	admin := adminFrom(r.Context())
+	_ = s.db.AddAudit(&admin.ID, "publish_config", "config_revision", &rev.ID, body.Reason, clientIP(r))
+	s.notify("config", rev)
+	writeJSON(w, 200, map[string]any{"revision": rev, "node_count": len(s.desiredSnapshot())})
+}
+
+func (s *Server) desiredSnapshot() map[string]*core.NodeDesiredState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]*core.NodeDesiredState, len(s.desired))
+	for k, v := range s.desired {
+		out[k] = v
+	}
+	return out
+}
+
+// publishConfig compiles topology into desired state and makes it available to agents.
+func (s *Server) publishConfig(reason string) (*core.ConfigRevision, error) {
+	gen, err := s.db.NextGeneration()
 	if err != nil {
-		writeJSON(w, 500, map[string]string{"message": err.Error()})
-		return
+		return nil, err
+	}
+	states, err := routing.Compile(s.db, uint64(gen), s.box)
+	if err != nil {
+		return nil, err
+	}
+	rev, err := s.db.CreateConfigRevision(reason, gen)
+	if err != nil {
+		return nil, err
 	}
 	s.mu.Lock()
 	for nodeID, st := range states {
@@ -174,10 +195,22 @@ func (s *Server) handleConfigPublish(w http.ResponseWriter, r *http.Request) {
 		_ = s.db.UpdateRolloutStatus(rev.ID, nodeID, core.RolloutDispatched, "")
 	}
 	s.mu.Unlock()
-	admin := adminFrom(r.Context())
-	_ = s.db.AddAudit(&admin.ID, "publish_config", "config_revision", &rev.ID, body.Reason, clientIP(r))
-	s.notify("config", rev)
-	writeJSON(w, 200, map[string]any{"revision": rev, "node_count": len(states)})
+	return rev, nil
+}
+
+// hydrateDesiredFromDB rebuilds in-memory desired state after controller restart.
+func (s *Server) hydrateDesiredFromDB() {
+	states, err := routing.Compile(s.db, 1, s.box)
+	if err != nil {
+		log.Printf("hydrate desired state: %v", err)
+		return
+	}
+	s.mu.Lock()
+	for id, st := range states {
+		s.desired[id] = st
+	}
+	s.mu.Unlock()
+	log.Printf("hydrated desired state for %d nodes", len(states))
 }
 
 func (s *Server) handleListRevisions(w http.ResponseWriter, r *http.Request) {

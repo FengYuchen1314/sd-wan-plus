@@ -179,6 +179,10 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 			return err
 		}
 		_ = run("ip", "link", "set", l.InterfaceName, "up")
+		// wg setconf does not install AllowedIPs routes (unlike wg-quick)
+		if l.PeerOverlayIP != "" {
+			_ = run("ip", "route", "replace", l.PeerOverlayIP+"/32", "dev", l.InterfaceName)
+		}
 	}
 
 	if st.ForwardingSettings.IPv4Forwarding {

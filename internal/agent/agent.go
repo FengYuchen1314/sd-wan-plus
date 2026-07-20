@@ -215,6 +215,7 @@ func (a *Agent) pullAndApply() {
 		log.Printf("desired decode: %v", err)
 		return
 	}
+	a.injectLocalWGKey(&st)
 	prep, err := a.netd.Call(netd.Request{Action: "prepare", State: &st})
 	if err != nil || !prep.OK {
 		log.Printf("prepare failed: %v %v", err, prep)
@@ -235,6 +236,22 @@ func (a *Agent) pullAndApply() {
 	a.activeGen = &g
 	_ = os.WriteFile(filepath.Join(a.cfg.DataDir, "active_generation"), []byte(fmt.Sprintf("%d", g)), 0o644)
 	log.Printf("applied generation %d hash=%s", st.Generation, st.ConfigHash)
+}
+
+func (a *Agent) injectLocalWGKey(st *core.NodeDesiredState) {
+	b, err := os.ReadFile(filepath.Join(a.cfg.DataDir, "wg_private.key"))
+	if err != nil {
+		return
+	}
+	key := strings.TrimSpace(string(b))
+	if key == "" {
+		return
+	}
+	for i := range st.WireGuardLinks {
+		if strings.TrimSpace(st.WireGuardLinks[i].NodePrivateKey) == "" {
+			st.WireGuardLinks[i].NodePrivateKey = key
+		}
+	}
 }
 
 type pendingUpdate struct {

@@ -219,6 +219,7 @@ func (s *Server) NodeRouter() http.Handler {
 
 func (s *Server) ListenAndServe(ctx context.Context) error {
 	go s.hub.Run()
+	s.hydrateDesiredFromDB()
 	webAddr := formatAddr(s.cfg.WebPort)
 	nodeAddr := formatAddr(s.cfg.NodePort)
 	webSrv := &http.Server{Addr: webAddr, Handler: s.Router()}

@@ -339,13 +339,34 @@ install_node() {
 
   WG_PRIV=$( (wg genkey) 2>/dev/null || openssl rand -base64 32 )
   WG_PUB=$( (echo "$WG_PRIV" | wg pubkey) 2>/dev/null || echo "$WG_PRIV" )
-  RESP=$(curl -fsSL -X POST "$PARENT_URL/bootstrap/enroll" -H 'Content-Type: application/json' \
-    -d "{\"token\":\"$TOKEN\",\"node_name\":\"$NODE_NAME\",\"wg_public_key\":\"$WG_PUB\",\"identity_public_key\":\"$WG_PUB\",\"agent_version\":\"0.1.0\",\"protocol_version\":1}")
+  umask 077; echo "$WG_PRIV" > "$INSTALL_DIR/data/wg_private.key"
+  RESP=$(
+    PW_BASE="$PARENT_URL" PW_TOKEN="$TOKEN" PW_NAME="$NODE_NAME" \
+    PW_WG_PUB="$WG_PUB" PW_WG_PRIV="$WG_PRIV" PW_VER="0.1.0" \
+    python3 - <<'PY'
+import json, os, urllib.request
+payload = {
+  "token": os.environ["PW_TOKEN"],
+  "node_name": os.environ["PW_NAME"],
+  "wg_public_key": os.environ["PW_WG_PUB"],
+  "wg_private_key": os.environ["PW_WG_PRIV"],
+  "identity_public_key": os.environ["PW_WG_PUB"],
+  "agent_version": os.environ.get("PW_VER", "0.1.0"),
+  "protocol_version": 1,
+}
+req = urllib.request.Request(
+  os.environ["PW_BASE"].rstrip("/") + "/bootstrap/enroll",
+  data=json.dumps(payload).encode(),
+  headers={"Content-Type": "application/json"},
+  method="POST",
+)
+print(urllib.request.urlopen(req, timeout=60).read().decode())
+PY
+  )
   echo "$RESP" > "$INSTALL_DIR/data/enroll.json"
   NODE_ID=$(printf '%s' "$RESP" | sed -n 's/.*"node_id":"\([^"]*\)".*/\1/p')
   [[ -n "$NODE_ID" ]] || { echo "enroll 失败: $RESP"; exit 1; }
   echo "$NODE_ID" > "$INSTALL_DIR/data/node_id"
-  umask 077; echo "$WG_PRIV" > "$INSTALL_DIR/data/wg_private.key"
 
   cat > "$INSTALL_DIR/data/agent.env" <<EOF
 PW_NODE_ID=$NODE_ID

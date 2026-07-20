@@ -3,6 +3,7 @@ package controller
 import (
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -64,6 +65,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		Token             string `json:"token"`
 		NodeName          string `json:"node_name"`
 		WGPublicKey       string `json:"wg_public_key"`
+		WGPrivateKey      string `json:"wg_private_key"`
 		IdentityPublicKey string `json:"identity_public_key"`
 		AgentVersion      string `json:"agent_version"`
 		ProtocolVersion   int    `json:"protocol_version"`
@@ -108,11 +110,41 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	if name == "" {
 		name = t.SuggestedNodeName
 	}
-	encPriv, _ := s.box.Encrypt("")
-	encID, _ := s.box.Encrypt("")
+
+	wgPriv := strings.TrimSpace(body.WGPrivateKey)
+	wgPub := strings.TrimSpace(body.WGPublicKey)
+	if wgPriv == "" {
+		var genErr error
+		wgPriv, wgPub, genErr = security.GenerateWGKeyPair()
+		if genErr != nil {
+			writeJSON(w, 500, map[string]string{"message": "generate wg key: " + genErr.Error()})
+			return
+		}
+	} else if wgPub == "" {
+		writeJSON(w, 400, map[string]string{"message": "wg_public_key required with wg_private_key"})
+		return
+	}
+	encPriv, err := s.box.Encrypt(wgPriv)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": "encrypt wg key: " + err.Error()})
+		return
+	}
+	idPriv, idPub, err := security.GenerateIdentityKeyPair()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	encID, err := s.box.Encrypt(idPriv)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	if body.IdentityPublicKey == "" {
+		body.IdentityPublicKey = idPub
+	}
 	parentID := parent.ID
 	node := &core.Node{
-		DisplayName: name, OverlayIPv4: ip, WGPublicKey: body.WGPublicKey,
+		DisplayName: name, OverlayIPv4: ip, WGPublicKey: wgPub,
 		WGPrivateKeyEncrypted: encPriv, IdentityPublicKey: body.IdentityPublicKey,
 		IdentityPrivateKeyEnc: encID, ControlParentID: &parentID,
 		NodeServicePort: parent.NodeServicePort, WGPortRangeStart: parent.WGPortRangeStart,
@@ -155,12 +187,16 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	ep := fmt.Sprintf("%s:%d", listenerAddr, port)
 	_ = s.db.CreateLinkEndpoint(&core.WireGuardLinkEndpoint{
 		LinkID: link.ID, NodeID: parent.ID, InterfaceName: link.InterfaceNameA,
-		ListenPort: port, PeerPublicKey: body.WGPublicKey, IsInitiator: false,
+		ListenPort: port, PeerPublicKey: wgPub, IsInitiator: false,
 	})
 	_ = s.db.CreateLinkEndpoint(&core.WireGuardLinkEndpoint{
 		LinkID: link.ID, NodeID: node.ID, InterfaceName: link.InterfaceNameB,
 		PeerEndpoint: &ep, PeerPublicKey: parent.WGPublicKey, PersistentKeepalive: 25, IsInitiator: true,
 	})
+
+	if _, err := s.publishConfig("auto after enroll " + node.DisplayName); err != nil {
+		log.Printf("auto-publish after enroll: %v", err)
+	}
 
 	s.notify("nodes", node)
 	writeJSON(w, 200, map[string]any{
