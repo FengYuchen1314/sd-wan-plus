@@ -174,9 +174,21 @@ func (s *Store) EnsureRelease(version string, files []string) error {
 
 func (s *Store) ServeHTTP(w http.ResponseWriter, r *http.Request, name string) {
 	name = filepath.Base(name)
-	// allow releases/v/file via nested path encoded as releases--v--file? keep simple: basename only for bootstrap
 	p, err := s.Ensure(name)
 	if err != nil {
+		// Fallbacks: install layout puts binaries under /opt/pathweaver/{bin,artifacts}
+		for _, dir := range []string{
+			s.Dir,
+			"/opt/pathweaver/artifacts",
+			"/opt/pathweaver/bin",
+			"/opt/pathweaver/data/artifacts",
+		} {
+			cand := filepath.Join(dir, name)
+			if st, e := os.Stat(cand); e == nil && !st.IsDir() && st.Size() > 0 {
+				http.ServeFile(w, r, cand)
+				return
+			}
+		}
 		http.Error(w, err.Error(), 404)
 		return
 	}

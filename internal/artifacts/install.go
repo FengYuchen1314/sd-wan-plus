@@ -48,16 +48,10 @@ fetch pathweaver-netd       "$INSTALL_DIR/bin/pathweaver-netd"
 fetch pathweaver-updater    "$INSTALL_DIR/bin/pathweaver-updater"
 fetch pathweaver-cli        "$INSTALL_DIR/bin/pathweaver-cli" 1
 fetch pathweaver-controller "$INSTALL_DIR/bin/pathweaver-controller" 1
+# 缓存 install 脚本供本节点继续做父节点；链式首装不再 exec 它（避免旧脚本自拷贝退出）
 fetch install-node.sh       "$INSTALL_DIR/artifacts/install-node.sh" 1
 
-# 若父节点已缓存完整 install.sh，优先用统一安装器（PKG_ROOT 会识别已下载的 /opt/pathweaver/bin）
-if [[ -f "$INSTALL_DIR/artifacts/install-node.sh" ]]; then
-  chmod +x "$INSTALL_DIR/artifacts/install-node.sh" 2>/dev/null || true
-  exec bash "$INSTALL_DIR/artifacts/install-node.sh" --role node \
-    --parent-url "$BASE" --token "$TOKEN" --name "$NAME" --node-port "$NODE_PORT"
-fi
-
-# 回退：内联最小安装（仍只从父节点取文件）
+echo "[enroll] 向父节点注册..."
 WG_PRIV=$( (wg genkey) 2>/dev/null || openssl rand -base64 32 )
 WG_PUB=$( (echo "$WG_PRIV" | wg pubkey) 2>/dev/null || echo "$WG_PRIV" )
 RESP=$(curl -fsSL -X POST "$BASE/bootstrap/enroll" -H 'Content-Type: application/json' \
