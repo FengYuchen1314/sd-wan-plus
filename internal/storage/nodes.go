@@ -155,7 +155,7 @@ func (db *DB) AddNodeAddress(nodeID, address, addrType string, primary bool) (*c
 }
 
 func (db *DB) ListNodeAddresses(nodeID string) ([]core.NodeAddress, error) {
-	rows, err := db.SQL.Query(`SELECT id, node_id, address, address_type, is_primary, created_at FROM node_addresses WHERE node_id = ?`, nodeID)
+	rows, err := db.SQL.Query(`SELECT id, node_id, address, address_type, is_primary, created_at FROM node_addresses WHERE node_id = ? ORDER BY is_primary DESC, CASE address_type WHEN 'public' THEN 0 WHEN 'lan' THEN 1 ELSE 2 END, created_at ASC`, nodeID)
 	if err != nil {
 		return nil, err
 	}

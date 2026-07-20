@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"time"
 
@@ -208,6 +209,11 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFrom(r.Context())
 	_ = s.db.AddAudit(&admin.ID, "create_link", "link", &link.ID, "", clientIP(r))
+	if body.Enabled {
+		if _, err := s.publishConfig("auto after create link"); err != nil {
+			log.Printf("publish after create link: %v", err)
+		}
+	}
 	s.notify("links", link)
 	writeJSON(w, 200, link)
 }
@@ -225,6 +231,9 @@ func (s *Server) handleUpdateLink(w http.ResponseWriter, r *http.Request) {
 		if err := s.db.SetLinkEnabled(id, *body.Enabled); err != nil {
 			writeJSON(w, 500, map[string]string{"message": err.Error()})
 			return
+		}
+		if _, err := s.publishConfig("auto after update link"); err != nil {
+			log.Printf("publish after update link: %v", err)
 		}
 	}
 	link, _ := s.db.GetLink(id)

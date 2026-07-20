@@ -71,6 +71,22 @@ fetch pathweaver-controller "$INSTALL_DIR/bin/pathweaver-controller" 1
 # 缓存 install 脚本供本节点继续做父节点；链式首装不再 exec 它（避免旧脚本自拷贝退出）
 fetch install-node.sh       "$INSTALL_DIR/artifacts/install-node.sh" 1
 
+echo "[deps] 安装 WireGuard / iproute2（overlay 互通必需）..."
+export DEBIAN_FRONTEND=noninteractive
+if command -v apt-get >/dev/null 2>&1; then
+  apt-get update -y >/dev/null 2>&1 || true
+  apt-get install -y wireguard-tools iproute2 python3 curl ca-certificates >/dev/null 2>&1 || \
+    apt-get install -y wireguard-tools iproute2 python3 curl ca-certificates
+fi
+if ! command -v wg >/dev/null 2>&1; then
+  echo "未找到 wg（wireguard-tools）。请先安装后再装节点。" >&2
+  exit 1
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "未找到 python3。" >&2
+  exit 1
+fi
+
 # 可用环境变量跳过交互：PW_NODE_NAME / PW_ADVERTISE_ADDRESS / PW_HAS_PUBLIC_IP=yes|no / PW_NONINTERACTIVE=1
 NAME="${PW_NODE_NAME:-$NAME}"
 ADVERTISE_ADDR="${PW_ADVERTISE_ADDRESS:-}"
@@ -169,8 +185,9 @@ fi
 [[ -n "$ADDR_TYPE" ]] || { if [[ "$HAS_PUBLIC" == "1" ]]; then ADDR_TYPE=public; else ADDR_TYPE=lan; fi; }
 
 echo "[enroll] 向父节点注册 (advertise=$ADVERTISE_ADDR type=$ADDR_TYPE)..."
-WG_PRIV=$( (wg genkey) 2>/dev/null || openssl rand -base64 32 )
-WG_PUB=$( (echo "$WG_PRIV" | wg pubkey) 2>/dev/null || echo "$WG_PRIV" )
+WG_PRIV=$(wg genkey)
+WG_PUB=$(printf '%%s' "$WG_PRIV" | wg pubkey)
+[[ -n "$WG_PUB" && "$WG_PUB" != "$WG_PRIV" ]] || { echo "wg pubkey 失败"; exit 1; }
 umask 077; echo "$WG_PRIV" > "$INSTALL_DIR/data/wg_private.key"
 RESP=$(
   PW_BASE="$BASE" PW_TOKEN="$TOKEN" PW_NAME="$NAME" PW_WG_PUB="$WG_PUB" PW_WG_PRIV="$WG_PRIV" PW_VER="%s" \

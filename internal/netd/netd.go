@@ -179,9 +179,14 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 			return err
 		}
 		_ = run("ip", "link", "set", l.InterfaceName, "up")
-		// wg setconf does not install AllowedIPs routes (unlike wg-quick)
+		// wg setconf does not install AllowedIPs routes (unlike wg-quick).
+		// Overlay IP lives on pw-lo; force src so ICMP/TCP use overlay, not underlay eth0.
 		if l.PeerOverlayIP != "" {
-			_ = run("ip", "route", "replace", l.PeerOverlayIP+"/32", "dev", l.InterfaceName)
+			args := []string{"route", "replace", l.PeerOverlayIP + "/32", "dev", l.InterfaceName}
+			if st.OverlayIdentity.IPv4 != "" {
+				args = append(args, "src", st.OverlayIdentity.IPv4)
+			}
+			_ = run("ip", args...)
 		}
 	}
 
