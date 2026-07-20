@@ -1,0 +1,97 @@
+syntax = "proto3";
+
+package pathweaver.control;
+
+message RelayEnvelope {
+    string message_id = 1;
+    string source_node_id = 2;
+    string target_node_id = 3;
+    string network_id = 4;
+    uint32 ttl = 5;
+    string trace_id = 6;
+    string payload_type = 7;
+    bytes payload = 8;
+}
+
+message ControlMessage {
+    string message_id = 1;
+    string source_node_id = 2;
+    string target_node_id = 3;
+    uint64 timestamp = 4;
+    oneof body {
+        Heartbeat heartbeat = 10;
+        ConfigPush config_push = 11;
+        ConfigAck config_ack = 12;
+        StatusReport status_report = 13;
+        ProbeRequest probe_request = 14;
+        ProbeResponse probe_response = 15;
+        UpdateNotify update_notify = 16;
+    }
+}
+
+message Heartbeat {
+    string agent_version = 1;
+    uint32 protocol_version = 2;
+    optional uint64 active_generation = 3;
+    repeated WireGuardLinkStatus wg_links = 4;
+}
+
+message WireGuardLinkStatus {
+    string link_id = 1;
+    string interface_name = 2;
+    optional uint64 last_handshake = 3;
+    uint64 rx_bytes = 4;
+    uint64 tx_bytes = 5;
+}
+
+message ConfigPush {
+    uint64 generation = 1;
+    string config_hash = 2;
+    bytes desired_state = 3;
+}
+
+message ConfigAck {
+    uint64 generation = 1;
+    string node_id = 2;
+    string status = 3;
+    string error_message = 4;
+}
+
+message StatusReport {
+    string node_id = 1;
+    string agent_version = 2;
+    uint32 protocol_version = 3;
+    uint64 active_generation = 4;
+    repeated WireGuardLinkStatus wg_links = 5;
+}
+
+message ProbeRequest {
+    string probe_id = 1;
+    string probe_type = 2;
+    string target_overlay_ip = 3;
+    uint32 count = 4;
+    uint32 interval_ms = 5;
+}
+
+message ProbeResponse {
+    string probe_id = 1;
+    string source_node_id = 2;
+    uint32 success_count = 3;
+    uint32 failure_count = 4;
+    double packet_loss_pct = 5;
+    double rtt_min_ms = 6;
+    double rtt_median_ms = 7;
+    double rtt_p95_ms = 8;
+    double jitter_ms = 9;
+}
+
+message UpdateNotify {
+    string update_job_id = 1;
+    string target_version = 2;
+    string manifest_sha256 = 3;
+    uint32 depth = 4;
+}
+
+service ControlService {
+    rpc OpenControlStream(stream ControlMessage) returns (stream ControlMessage);
+}

@@ -1,0 +1,14 @@
+[package]
+name = "pathweaver-routing"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+pathweaver-core = { path = "../pathweaver-core" }
+pathweaver-topology = { path = "../pathweaver-topology" }
+pathweaver-security = { path = "../pathweaver-security" }
+serde.workspace = true
+uuid.workspace = true
+chrono.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package pathweaver.enrollment;
+
+message EnrollRequest {
+    string token = 1;
+    string node_name = 2;
+    string wg_public_key = 3;
+    string identity_public_key = 4;
+    string agent_version = 5;
+    uint32 protocol_version = 6;
+}
+
+message EnrollResponse {
+    string node_id = 1;
+    string overlay_ipv4 = 2;
+    string overlay_ipv6 = 3;
+    string network_id = 4;
+    string parent_wg_public_key = 5;
+    string parent_wg_endpoint = 6;
+}
+
+message CommitEnrollRequest {
+    string node_id = 1;
+    string token = 2;
+    bool overlay_reachable = 3;
+}
+
+message CommitEnrollResponse {
+    bool success = 1;
+    string recovery_endpoint = 2;
+}
+
+service EnrollmentService {
+    rpc Enroll(EnrollRequest) returns (EnrollResponse);
+    rpc CommitEnroll(CommitEnrollRequest) returns (CommitEnrollResponse);
+}
