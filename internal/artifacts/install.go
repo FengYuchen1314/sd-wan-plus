@@ -24,22 +24,35 @@ mkdir -p "$INSTALL_DIR"/{bin,data,artifacts,releases}
 
 fetch() {
   local name="$1" dest="$2"
+  local optional="${3:-0}"
   echo "[fetch] $BASE/bootstrap/artifact/$name"
-  curl -fsSL "$BASE/bootstrap/artifact/$name" -o "$dest"
+  mkdir -p "$(dirname "$dest")"
+  if ! curl -fL --retry 3 --retry-delay 1 --connect-timeout 15 --max-time 300 \
+      "$BASE/bootstrap/artifact/$name" -o "$dest.tmp"; then
+    rm -f "$dest.tmp"
+    if [[ "$optional" == "1" ]]; then
+      echo "  (可选) $name 不可用，跳过"
+      return 0
+    fi
+    echo "拉取失败: $name"
+    return 1
+  fi
+  mv -f "$dest.tmp" "$dest"
   chmod +x "$dest" 2>/dev/null || true
   cp -f "$dest" "$INSTALL_DIR/artifacts/$(basename "$dest")" 2>/dev/null || true
 }
 
-# 统一包内全部节点侧二进制（与主控同一套，角色由参数区分）
+# 统一包内节点侧二进制（与主控同一套，角色由参数区分）
 fetch pathweaver-agent      "$INSTALL_DIR/bin/pathweaver-agent"
 fetch pathweaver-netd       "$INSTALL_DIR/bin/pathweaver-netd"
 fetch pathweaver-updater    "$INSTALL_DIR/bin/pathweaver-updater"
-fetch pathweaver-cli        "$INSTALL_DIR/bin/pathweaver-cli" || true
-fetch pathweaver-controller "$INSTALL_DIR/bin/pathweaver-controller" || true
-fetch install-node.sh       "$INSTALL_DIR/artifacts/install-node.sh" || true
+fetch pathweaver-cli        "$INSTALL_DIR/bin/pathweaver-cli" 1
+fetch pathweaver-controller "$INSTALL_DIR/bin/pathweaver-controller" 1
+fetch install-node.sh       "$INSTALL_DIR/artifacts/install-node.sh" 1
 
-# 若父节点已缓存完整 install.sh，优先用统一安装器
-if [[ -x "$INSTALL_DIR/artifacts/install-node.sh" ]]; then
+# 若父节点已缓存完整 install.sh，优先用统一安装器（PKG_ROOT 会识别已下载的 /opt/pathweaver/bin）
+if [[ -f "$INSTALL_DIR/artifacts/install-node.sh" ]]; then
+  chmod +x "$INSTALL_DIR/artifacts/install-node.sh" 2>/dev/null || true
   exec bash "$INSTALL_DIR/artifacts/install-node.sh" --role node \
     --parent-url "$BASE" --token "$TOKEN" --name "$NAME" --node-port "$NODE_PORT"
 fi

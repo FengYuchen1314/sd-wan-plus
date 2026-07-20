@@ -111,16 +111,25 @@ ask() {
 }
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-# 安装包根目录：脚本所在目录，或解压后的 pathweaver/
+# 安装包根目录：脚本旁、解压目录、或链式安装已拉取到的 /opt/pathweaver
 PKG_ROOT="$SCRIPT_DIR"
-if [[ ! -x "$PKG_ROOT/bin/pathweaver-agent" && -x "$SCRIPT_DIR/pathweaver/bin/pathweaver-agent" ]]; then
+if [[ -x "$INSTALL_DIR/bin/pathweaver-agent" ]]; then
+  PKG_ROOT="$INSTALL_DIR"
+elif [[ -x "$SCRIPT_DIR/bin/pathweaver-agent" ]]; then
+  PKG_ROOT="$SCRIPT_DIR"
+elif [[ -x "$SCRIPT_DIR/pathweaver/bin/pathweaver-agent" ]]; then
   PKG_ROOT="$SCRIPT_DIR/pathweaver"
+elif [[ -x "$SCRIPT_DIR/../bin/pathweaver-agent" ]]; then
+  PKG_ROOT=$(cd "$SCRIPT_DIR/.." && pwd)
 fi
 
-need_bins=(pathweaver-agent pathweaver-netd pathweaver-updater pathweaver-controller pathweaver-cli)
+need_bins=(pathweaver-agent pathweaver-netd pathweaver-updater pathweaver-cli)
+if [[ "$ROLE" == "controller" ]]; then
+  need_bins+=(pathweaver-controller)
+fi
 for b in "${need_bins[@]}"; do
   if [[ ! -f "$PKG_ROOT/bin/$b" ]]; then
-    echo "缺少二进制: $PKG_ROOT/bin/$b （请使用 GitHub Release 安装包）"
+    echo "缺少二进制: $PKG_ROOT/bin/$b （请使用 GitHub Release 安装包，或确认父节点制品缓存完整）"
     exit 1
   fi
 done
