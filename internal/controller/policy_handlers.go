@@ -289,6 +289,7 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 	}
 	s.updateMu.Unlock()
 	s.notify("updates", map[string]any{"job_id": jobID, "phase": "prefetch"})
+	s.broadcastUpdateProgress(jobID)
 
 	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
@@ -308,6 +309,7 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 				onlinePending++
 			}
 		}
+		s.broadcastUpdateProgress(jobID)
 		if allStaged || onlinePending == 0 {
 			break
 		}
@@ -322,6 +324,7 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 	}
 	s.updateMu.Unlock()
 	s.notify("updates", map[string]any{"job_id": jobID, "phase": "install"})
+	s.broadcastUpdateProgress(jobID)
 
 	targets, _ = s.db.ListUpdateTargets(jobID)
 	for _, t := range targets {
@@ -340,9 +343,11 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 			// mark staged nodes ready to install by ensuring they see install phase
 			if st == core.UpdateStaged || st == "" {
 				time.Sleep(1 * time.Second)
+				s.broadcastUpdateProgress(jobID)
 				continue
 			}
 			time.Sleep(1 * time.Second)
+			s.broadcastUpdateProgress(jobID)
 		}
 	}
 
@@ -351,6 +356,32 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 	s.activeUpdate = nil
 	s.updateMu.Unlock()
 	s.notify("updates", map[string]any{"job_id": jobID, "status": "Completed"})
+	s.broadcastUpdateProgress(jobID)
+}
+
+func (s *Server) broadcastUpdateProgress(jobID string) {
+	s.updateMu.Lock()
+	phase := ""
+	statusByNode := map[string]string{}
+	version := ""
+	if s.activeUpdate != nil {
+		phase = s.activeUpdate.Phase
+		version = s.activeUpdate.TargetVersion
+		for k, v := range s.activeUpdate.StatusByNode {
+			statusByNode[k] = v
+		}
+	}
+	s.updateMu.Unlock()
+	targets, _ := s.db.ListUpdateTargets(jobID)
+	for _, t := range targets {
+		if _, ok := statusByNode[t.NodeID]; !ok {
+			statusByNode[t.NodeID] = t.Status
+		}
+	}
+	s.notify("updates", map[string]any{
+		"job_id": jobID, "phase": phase, "target_version": version,
+		"status_by_node": statusByNode, "targets": targets,
+	})
 }
 
 func (s *Server) handleRollbackUpdate(w http.ResponseWriter, r *http.Request) {

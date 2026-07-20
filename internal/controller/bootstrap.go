@@ -315,7 +315,7 @@ func (s *Server) handleAgentUpdateReport(w http.ResponseWriter, r *http.Request)
 		s.activeUpdate.StatusByNode[body.NodeID] = body.Status
 	}
 	s.updateMu.Unlock()
-	s.notify("updates", body)
+	s.broadcastUpdateProgress(body.JobID)
 	writeJSON(w, 200, map[string]string{"status": "ok"})
 }
 

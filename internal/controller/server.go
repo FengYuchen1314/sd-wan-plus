@@ -165,6 +165,9 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/config/revisions/{id}/nodes", s.handleRevisionNodes)
 
 		r.Get("/api/updates", s.handleListUpdates)
+		r.Get("/api/updates/latest", s.handleUpdatesLatest)
+		r.Get("/api/updates/overview", s.handleUpdatesOverview)
+		r.Post("/api/updates/pull-latest", s.handlePullLatest)
 		r.Post("/api/updates", s.handleCreateUpdate)
 		r.Post("/api/updates/{id}/start", s.handleStartUpdate)
 		r.Post("/api/updates/{id}/rollback", s.handleRollbackUpdate)

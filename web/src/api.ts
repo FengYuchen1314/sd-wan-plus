@@ -58,6 +58,10 @@ export const api = {
   revisionNodes: (id: string) => request<any[]>(`/api/config/revisions/${id}/nodes`),
 
   updates: () => request<any[]>('/api/updates'),
+  updatesLatest: () => request<any>('/api/updates/latest'),
+  updatesOverview: () => request<any>('/api/updates/overview'),
+  pullLatest: (auto_start = true) =>
+    request('/api/updates/pull-latest', { method: 'POST', body: JSON.stringify({ auto_start }) }),
   createUpdate: (body: any) => request('/api/updates', { method: 'POST', body: JSON.stringify(body) }),
   startUpdate: (id: string) => request(`/api/updates/${id}/start`, { method: 'POST' }),
   rollbackUpdate: (id: string) => request(`/api/updates/${id}/rollback`, { method: 'POST' }),
