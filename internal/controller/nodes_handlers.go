@@ -59,6 +59,7 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
 	var body struct {
 		NodeServicePort  *int `json:"node_service_port"`
+		WGListenPort     *int `json:"wg_listen_port"` // convenience: sets start=end
 		WGPortRangeStart *int `json:"wg_port_range_start"`
 		WGPortRangeEnd   *int `json:"wg_port_range_end"`
 	}
@@ -73,19 +74,55 @@ func (s *Server) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 	}
 	sp, ws, we := n.NodeServicePort, n.WGPortRangeStart, n.WGPortRangeEnd
 	if body.NodeServicePort != nil {
+		if *body.NodeServicePort < 1 || *body.NodeServicePort > 65535 {
+			writeJSON(w, 400, map[string]string{"message": "node_service_port out of range"})
+			return
+		}
 		sp = *body.NodeServicePort
 	}
+	if body.WGListenPort != nil {
+		if !validUDPPort(*body.WGListenPort) {
+			writeJSON(w, 400, map[string]string{"message": "wg_listen_port out of range"})
+			return
+		}
+		ws, we = *body.WGListenPort, *body.WGListenPort
+	}
 	if body.WGPortRangeStart != nil {
+		if !validUDPPort(*body.WGPortRangeStart) {
+			writeJSON(w, 400, map[string]string{"message": "wg_port_range_start out of range"})
+			return
+		}
 		ws = *body.WGPortRangeStart
+		if body.WGPortRangeEnd == nil && body.WGListenPort == nil && s.nodePublicAdvertise(id) == "" {
+			we = ws
+		}
 	}
 	if body.WGPortRangeEnd != nil {
+		if !validUDPPort(*body.WGPortRangeEnd) {
+			writeJSON(w, 400, map[string]string{"message": "wg_port_range_end out of range"})
+			return
+		}
 		we = *body.WGPortRangeEnd
+	}
+	if ws > we {
+		writeJSON(w, 400, map[string]string{"message": "wg port range start > end"})
+		return
 	}
 	if err := s.db.UpdateNodePorts(id, sp, ws, we); err != nil {
 		writeJSON(w, 500, map[string]string{"message": err.Error()})
 		return
 	}
-	writeJSON(w, 200, map[string]string{"status": "ok"})
+	admin := adminFrom(r.Context())
+	_ = s.db.AddAudit(&admin.ID, "update_node_ports", "node", &id, fmt.Sprintf("wg=%d-%d", ws, we), clientIP(r))
+	s.notify("nodes", nil)
+	writeJSON(w, 200, map[string]any{
+		"status": "ok", "node_service_port": sp,
+		"wg_port_range_start": ws, "wg_port_range_end": we,
+	})
+}
+
+func validUDPPort(p int) bool {
+	return p >= 1 && p <= 65535
 }
 
 func (s *Server) handleListAddresses(w http.ResponseWriter, r *http.Request) {

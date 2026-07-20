@@ -3,9 +3,11 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/netutil"
 	"github.com/google/uuid"
 )
 
@@ -137,6 +139,13 @@ func (db *DB) AllocateWGPort(nodeID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	// LAN nodes keep a single-port pool (at most one downstream listener).
+	if n.WGPortRangeEnd > n.WGPortRangeStart && !db.nodeHasPublicDialable(nodeID) {
+		end := n.WGPortRangeStart
+		if err := db.UpdateNodePorts(nodeID, n.NodeServicePort, n.WGPortRangeStart, end); err == nil {
+			n.WGPortRangeEnd = end
+		}
+	}
 	used := map[int]bool{}
 	rows, err := db.SQL.Query(`SELECT listener_port FROM wireguard_links WHERE listener_node_id = ?`, nodeID)
 	if err != nil {
@@ -169,6 +178,22 @@ func (db *DB) AllocateWGPort(nodeID string) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("no free WireGuard port in pool %d-%d", n.WGPortRangeStart, n.WGPortRangeEnd)
+}
+
+func (db *DB) nodeHasPublicDialable(nodeID string) bool {
+	addrs, err := db.ListNodeAddresses(nodeID)
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if strings.EqualFold(a.AddressType, "lan") {
+			continue
+		}
+		if netutil.IsPublicDialable(a.Address) {
+			return true
+		}
+	}
+	return false
 }
 
 func (db *DB) UpdateLinkEndpoint(e *core.WireGuardLinkEndpoint) error {

@@ -86,10 +86,11 @@ if [[ ! -x "$INSTALL_DIR/bin/pathweaver-cli" ]]; then
   exit 1
 fi
 
-# 可用环境变量跳过交互：PW_NODE_NAME / PW_ADVERTISE_ADDRESS / PW_HAS_PUBLIC_IP=yes|no / PW_NONINTERACTIVE=1
+# 可用环境变量跳过交互：PW_NODE_NAME / PW_ADVERTISE_ADDRESS / PW_HAS_PUBLIC_IP=yes|no / PW_WG_LISTEN_PORT / PW_NONINTERACTIVE=1
 NAME="${PW_NODE_NAME:-$NAME}"
 ADVERTISE_ADDR="${PW_ADVERTISE_ADDRESS:-}"
 HAS_PUBLIC="${PW_HAS_PUBLIC_IP:-}"
+WG_LISTEN_PORT="${PW_WG_LISTEN_PORT:-}"
 NONINTERACTIVE="${PW_NONINTERACTIVE:-0}"
 case "$(printf '%%s' "$HAS_PUBLIC" | tr '[:upper:]' '[:lower:]')" in
   y|yes|1|true|public) HAS_PUBLIC=1; ADDR_TYPE=public ;;
@@ -183,6 +184,11 @@ fi
 [[ -n "$ADVERTISE_ADDR" ]] || { echo "必须填写本机可达地址" >&2; exit 1; }
 [[ -n "$ADDR_TYPE" ]] || { if [[ "$HAS_PUBLIC" == "1" ]]; then ADDR_TYPE=public; else ADDR_TYPE=lan; fi; }
 
+if [[ "$HAS_PUBLIC" != "1" && -z "$WG_LISTEN_PORT" && "$NONINTERACTIVE" != "1" ]] && can_tty; then
+  ask "本机 WireGuard 监听端口 [14303]（内网节点单端口，回车用默认）: " _wp
+  WG_LISTEN_PORT=${_wp:-}
+fi
+
 echo "[enroll] 向父节点注册 (advertise=$ADVERTISE_ADDR type=$ADDR_TYPE)..."
 mapfile -t _kp < <("$INSTALL_DIR/bin/pathweaver-cli" wg-keypair)
 WG_PRIV=${_kp[0]:-}
@@ -191,7 +197,7 @@ WG_PUB=${_kp[1]:-}
 umask 077; echo "$WG_PRIV" > "$INSTALL_DIR/data/wg_private.key"
 RESP=$(
   PW_BASE="$BASE" PW_TOKEN="$TOKEN" PW_NAME="$NAME" PW_WG_PUB="$WG_PUB" PW_WG_PRIV="$WG_PRIV" PW_VER="%s" \
-  PW_ADV_ADDR="$ADVERTISE_ADDR" PW_ADDR_TYPE="$ADDR_TYPE" \
+  PW_ADV_ADDR="$ADVERTISE_ADDR" PW_ADDR_TYPE="$ADDR_TYPE" PW_WG_LISTEN_PORT="$WG_LISTEN_PORT" \
   python3 - <<'PY'
 import json, os, urllib.request
 payload = {
@@ -206,6 +212,9 @@ payload = {
   "address_type": os.environ.get("PW_ADDR_TYPE", "lan"),
   "has_public_ip": os.environ.get("PW_ADDR_TYPE", "lan") == "public",
 }
+wp = (os.environ.get("PW_WG_LISTEN_PORT") or "").strip()
+if wp.isdigit():
+  payload["wg_listen_port"] = int(wp)
 req = urllib.request.Request(
   os.environ["PW_BASE"].rstrip("/") + "/bootstrap/enroll",
   data=json.dumps(payload).encode(),

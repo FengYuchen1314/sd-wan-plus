@@ -73,6 +73,9 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		AdvertiseAddress  string `json:"advertise_address"`
 		AddressType       string `json:"address_type"` // public | lan
 		HasPublicIP       bool   `json:"has_public_ip"`
+		WGListenPort      *int   `json:"wg_listen_port"`      // LAN: single listen port override
+		WGPortRangeStart  *int   `json:"wg_port_range_start"` // optional pool override
+		WGPortRangeEnd    *int   `json:"wg_port_range_end"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, 400, map[string]string{"message": err.Error()})
@@ -149,13 +152,67 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	if body.IdentityPublicKey == "" {
 		body.IdentityPublicKey = idPub
 	}
+	addrType := strings.TrimSpace(body.AddressType)
+	if addrType == "" {
+		if body.HasPublicIP {
+			addrType = "public"
+		} else {
+			addrType = "lan"
+		}
+	}
+	adv := strings.TrimSpace(body.AdvertiseAddress)
+	isPublic := body.HasPublicIP || strings.EqualFold(addrType, "public")
+	if adv != "" && netutil.IsPublicDialable(adv) && !strings.EqualFold(addrType, "lan") {
+		isPublic = true
+	}
+	if strings.EqualFold(addrType, "lan") {
+		isPublic = false
+	}
+
+	wgStart, wgEnd := parent.WGPortRangeStart, parent.WGPortRangeEnd
+	if !isPublic {
+		// LAN: one listen port (at most one downstream).
+		wgStart, wgEnd = s.cfg.WGPortStart, s.cfg.WGPortStart
+	}
+	if body.WGListenPort != nil {
+		if !validUDPPort(*body.WGListenPort) {
+			writeJSON(w, 400, map[string]string{"message": "wg_listen_port out of range"})
+			return
+		}
+		wgStart, wgEnd = *body.WGListenPort, *body.WGListenPort
+	}
+	if body.WGPortRangeStart != nil {
+		if !validUDPPort(*body.WGPortRangeStart) {
+			writeJSON(w, 400, map[string]string{"message": "wg_port_range_start out of range"})
+			return
+		}
+		wgStart = *body.WGPortRangeStart
+		if !isPublic && body.WGPortRangeEnd == nil && body.WGListenPort == nil {
+			wgEnd = wgStart
+		}
+	}
+	if body.WGPortRangeEnd != nil {
+		if !validUDPPort(*body.WGPortRangeEnd) {
+			writeJSON(w, 400, map[string]string{"message": "wg_port_range_end out of range"})
+			return
+		}
+		wgEnd = *body.WGPortRangeEnd
+	}
+	if wgStart > wgEnd {
+		writeJSON(w, 400, map[string]string{"message": "wg port range start > end"})
+		return
+	}
+	if !isPublic {
+		wgEnd = wgStart
+	}
+
 	parentID := parent.ID
 	node := &core.Node{
 		DisplayName: name, OverlayIPv4: ip, WGPublicKey: wgPub,
 		WGPrivateKeyEncrypted: encPriv, IdentityPublicKey: body.IdentityPublicKey,
 		IdentityPrivateKeyEnc: encID, ControlParentID: &parentID,
-		NodeServicePort: parent.NodeServicePort, WGPortRangeStart: parent.WGPortRangeStart,
-		WGPortRangeEnd: parent.WGPortRangeEnd, AgentVersion: body.AgentVersion,
+		NodeServicePort: parent.NodeServicePort, WGPortRangeStart: wgStart,
+		WGPortRangeEnd: wgEnd, AgentVersion: body.AgentVersion,
 		ProtocolVersion: body.ProtocolVersion, EnrollmentTokenID: &t.ID,
 	}
 	if node.ProtocolVersion == 0 {
@@ -167,15 +224,6 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.db.CreateControlRelation(parent.ID, node.ID, t.ID)
 
-	addrType := strings.TrimSpace(body.AddressType)
-	if addrType == "" {
-		if body.HasPublicIP {
-			addrType = "public"
-		} else {
-			addrType = "lan"
-		}
-	}
-	adv := strings.TrimSpace(body.AdvertiseAddress)
 	if adv != "" {
 		if _, err := s.db.AddNodeAddress(node.ID, adv, addrType, true); err != nil {
 			log.Printf("enroll add address: %v", err)

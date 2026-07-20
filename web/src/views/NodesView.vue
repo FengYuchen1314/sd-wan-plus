@@ -15,6 +15,10 @@ const confirmNode = ref<any>(null)
 const impact = ref<any>(null)
 const impactLoading = ref(false)
 
+const portEditId = ref('')
+const portStart = ref(14303)
+const portEnd = ref(14303)
+
 async function load() {
   const res = await api.nodes()
   nodes.value = res.nodes
@@ -23,6 +27,40 @@ async function load() {
 
 function statusOf(id: string) {
   return statuses.value.find((s) => s.node_id === id)
+}
+
+function isSinglePort(n: any) {
+  return n.wg_port_range_start === n.wg_port_range_end
+}
+
+function portLabel(n: any) {
+  if (isSinglePort(n)) return String(n.wg_port_range_start)
+  return `${n.wg_port_range_start}–${n.wg_port_range_end}`
+}
+
+function startPortEdit(n: any) {
+  portEditId.value = n.id
+  portStart.value = n.wg_port_range_start
+  portEnd.value = n.wg_port_range_end
+  renameId.value = ''
+}
+
+async function savePorts(n: any) {
+  error.value = ''
+  try {
+    const body: any = isSinglePort(n)
+      ? { wg_listen_port: Number(portStart.value) }
+      : {
+          wg_port_range_start: Number(portStart.value),
+          wg_port_range_end: Number(portEnd.value),
+        }
+    await api.updateNode(n.id, body)
+    msg.value = 'WG 端口已更新'
+    portEditId.value = ''
+    await load()
+  } catch (e: any) {
+    error.value = e.message
+  }
 }
 
 async function doRename(id: string) {
@@ -81,14 +119,14 @@ onMounted(load)
 <template>
   <div>
     <h1 class="page-title">节点</h1>
-    <p class="page-sub">身份 UUID 与显示名分离；删除前请先在面板移除，再在设备上卸载</p>
+    <p class="page-sub">身份 UUID 与显示名分离；内网节点 WG 为单监听端口，公网为端口池。删除前请先在面板移除，再在设备上卸载</p>
     <p v-if="error" class="error">{{ error }}</p>
     <p v-if="msg" class="success">{{ msg }}</p>
     <div class="card" style="overflow:auto">
       <table class="data">
         <thead>
           <tr>
-            <th>显示名</th><th>Overlay</th><th>Agent</th><th>配置</th><th>版本</th><th>操作</th>
+            <th>显示名</th><th>Overlay</th><th>WG 端口</th><th>Agent</th><th>配置</th><th>版本</th><th>操作</th>
           </tr>
         </thead>
         <tbody>
@@ -99,6 +137,24 @@ onMounted(load)
               <span v-if="n.is_controller" class="badge ok">控制机</span>
             </td>
             <td class="mono">{{ n.overlay_ipv4 }}</td>
+            <td>
+              <template v-if="portEditId === n.id">
+                <template v-if="isSinglePort(n)">
+                  <input v-model.number="portStart" type="number" min="1" max="65535" style="width:88px" />
+                </template>
+                <template v-else>
+                  <input v-model.number="portStart" type="number" min="1" max="65535" style="width:72px" />
+                  <span style="margin:0 0.25rem">–</span>
+                  <input v-model.number="portEnd" type="number" min="1" max="65535" style="width:72px" />
+                </template>
+                <button style="margin-left:0.35rem" @click="savePorts(n)">保存</button>
+                <button class="secondary" style="margin-left:0.25rem" @click="portEditId = ''">取消</button>
+              </template>
+              <template v-else>
+                <span class="mono">{{ portLabel(n) }}</span>
+                <button class="secondary" style="margin-left:0.35rem" @click="startPortEdit(n)">改</button>
+              </template>
+            </td>
             <td>
               <span class="badge" :class="statusOf(n.id)?.agent_online ? 'ok' : 'err'">
                 {{ statusOf(n.id)?.agent_online ? '在线' : '离线' }}
@@ -116,7 +172,7 @@ onMounted(load)
                 <button @click="doRename(n.id)">保存</button>
               </template>
               <template v-else>
-                <button class="secondary" @click="renameId = n.id; renameVal = n.display_name">重命名</button>
+                <button class="secondary" @click="renameId = n.id; renameVal = n.display_name; portEditId = ''">重命名</button>
                 <button
                   class="danger"
                   style="margin-left:0.35rem"
