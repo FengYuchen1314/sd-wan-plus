@@ -127,7 +127,7 @@ done
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates wireguard-tools nftables iproute2
+apt-get install -y curl ca-certificates wireguard-tools nftables iproute2 sqlite3 python3
 
 install_common_files() {
   mkdir -p "$INSTALL_DIR"/{bin,web,data,artifacts,releases}
@@ -238,15 +238,33 @@ AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
 [Install]
 WantedBy=multi-user.target"
 
-  NODE_ID=$(sqlite3 "$INSTALL_DIR/data/pathweaver.db" "SELECT id FROM nodes WHERE is_controller=1 LIMIT 1;" 2>/dev/null || true)
-  if [[ -n "${NODE_ID:-}" ]]; then
-    echo "$NODE_ID" > "$INSTALL_DIR/data/node_id"
-    cat > "$INSTALL_DIR/data/agent.env" <<EOF
+  NODE_ID=""
+  if [[ -f "$INSTALL_DIR/data/node_id" ]]; then
+    NODE_ID=$(tr -d ' \t\r\n' < "$INSTALL_DIR/data/node_id" || true)
+  fi
+  if [[ -z "${NODE_ID}" ]] && command -v sqlite3 >/dev/null 2>&1; then
+    NODE_ID=$(sqlite3 "$INSTALL_DIR/data/pathweaver.db" "SELECT id FROM nodes WHERE is_controller=1 LIMIT 1;" 2>/dev/null || true)
+  fi
+  if [[ -z "${NODE_ID}" ]] && command -v python3 >/dev/null 2>&1; then
+    NODE_ID=$(PW_DB="$INSTALL_DIR/data/pathweaver.db" python3 - <<'PY' 2>/dev/null || true
+import os, sqlite3
+db=sqlite3.connect(os.environ["PW_DB"])
+row=db.execute("SELECT id FROM nodes WHERE is_controller=1 LIMIT 1").fetchone()
+print(row[0] if row else "")
+PY
+)
+  fi
+  if [[ -z "${NODE_ID}" ]]; then
+    echo "错误: 无法读取控制机 node_id（agent 将无法上线）。请检查 $INSTALL_DIR/data/node_id"
+    exit 1
+  fi
+  echo "$NODE_ID" > "$INSTALL_DIR/data/node_id"
+  cat > "$INSTALL_DIR/data/agent.env" <<EOF
 PW_NODE_ID=$NODE_ID
 PW_PARENT_URL=http://127.0.0.1:$WEB_PORT
 PW_SERVE_CHILDREN=0
 EOF
-  fi
+  echo "本机 Agent node_id=$NODE_ID"
 
   write_unit pathweaver-agent.service "[Unit]
 Description=PathWeaver agent (controller node)

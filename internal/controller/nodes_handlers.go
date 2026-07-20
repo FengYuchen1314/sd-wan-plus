@@ -283,7 +283,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.ExpiresMinutes <= 0 {
-		body.ExpiresMinutes = 10
+		body.ExpiresMinutes = 60
 	}
 	tok, err := security.RandomToken(24)
 	if err != nil {
@@ -293,7 +293,7 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	t := &core.EnrollmentToken{
 		Token: tok, NetworkID: netw.ID, ParentNodeID: parent.ID,
 		SuggestedNodeName: body.SuggestedNodeName, AllowedInstallMode: "node",
-		ExpiresAt: time.Now().Add(time.Duration(body.ExpiresMinutes) * time.Minute),
+		ExpiresAt: time.Now().UTC().Add(time.Duration(body.ExpiresMinutes) * time.Minute),
 	}
 	if err := s.db.CreateEnrollmentToken(t); err != nil {
 		writeJSON(w, 500, map[string]string{"message": err.Error()})

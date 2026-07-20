@@ -7,7 +7,7 @@ const tokens = ref<any[]>([])
 const parentId = ref('')
 const parentAddress = ref('')
 const nodeName = ref('')
-const expires = ref(10)
+const expires = ref(60)
 const command = ref('')
 const error = ref('')
 

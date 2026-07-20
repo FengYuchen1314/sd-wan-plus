@@ -21,7 +21,7 @@ func (db *DB) CreateEnrollmentToken(t *core.EnrollmentToken) error {
 	_, err := db.SQL.Exec(`INSERT INTO enrollment_tokens(id, token, network_id, parent_node_id, suggested_node_name, allowed_install_mode, expires_at, used_at, revoked, created_at)
 		VALUES(?,?,?,?,?,?,?,?,?,?)`,
 		t.ID, t.Token, t.NetworkID, t.ParentNodeID, t.SuggestedNodeName, t.AllowedInstallMode,
-		t.ExpiresAt.Format(time.RFC3339), NullTime(t.UsedAt), rev, t.CreatedAt.Format(time.RFC3339))
+		t.ExpiresAt.UTC().Format(time.RFC3339), NullTime(t.UsedAt), rev, t.CreatedAt.UTC().Format(time.RFC3339))
 	return err
 }
 
@@ -35,12 +35,23 @@ func (db *DB) GetEnrollmentToken(token string) (*core.EnrollmentToken, error) {
 		return nil, err
 	}
 	if exp.Valid {
-		t.ExpiresAt, _ = time.Parse(time.RFC3339, exp.String)
+		t.ExpiresAt = parseFlexibleTime(exp.String)
 	}
 	t.UsedAt = ParseTime(used)
 	t.Revoked = rev == 1
-	t.CreatedAt, _ = time.Parse(time.RFC3339, cAt.String)
+	if cAt.Valid {
+		t.CreatedAt = parseFlexibleTime(cAt.String)
+	}
 	return &t, nil
+}
+
+func parseFlexibleTime(s string) time.Time {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t.UTC()
+		}
+	}
+	return time.Time{}
 }
 
 func (db *DB) ListEnrollmentTokens() ([]core.EnrollmentToken, error) {

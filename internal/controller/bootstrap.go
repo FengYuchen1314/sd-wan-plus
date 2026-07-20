@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/artifacts"
@@ -16,14 +17,26 @@ import (
 )
 
 func (s *Server) handleBootstrapInstall(w http.ResponseWriter, r *http.Request) {
-	token := r.URL.Query().Get("token")
+	token := strings.TrimSpace(r.URL.Query().Get("token"))
 	if token == "" {
 		http.Error(w, "token required", 400)
 		return
 	}
 	t, err := s.db.GetEnrollmentToken(token)
-	if err != nil || t.Revoked || t.UsedAt != nil || time.Now().After(t.ExpiresAt) {
-		http.Error(w, "invalid token", 403)
+	if err != nil {
+		http.Error(w, "invalid token: not found", 403)
+		return
+	}
+	if t.Revoked {
+		http.Error(w, "invalid token: revoked", 403)
+		return
+	}
+	if t.UsedAt != nil {
+		http.Error(w, "invalid token: already used", 403)
+		return
+	}
+	if t.ExpiresAt.IsZero() || time.Now().UTC().After(t.ExpiresAt.UTC()) {
+		http.Error(w, "invalid token: expired", 403)
 		return
 	}
 	parent, err := s.db.GetNode(t.ParentNodeID)
@@ -72,7 +85,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 403, map[string]string{"code": string(core.ErrTokenUsed), "message": "already used"})
 		return
 	}
-	if time.Now().After(t.ExpiresAt) {
+	if t.ExpiresAt.IsZero() || time.Now().UTC().After(t.ExpiresAt.UTC()) {
 		writeJSON(w, 403, map[string]string{"code": string(core.ErrTokenExpired), "message": "expired"})
 		return
 	}
@@ -348,6 +361,15 @@ func BootstrapController(db *storage.DB, box *security.SecretBox, cfg Config, pa
 	if err := db.CreateNode(node); err != nil {
 		return err
 	}
-	_, err = db.AddNodeAddress(node.ID, cfg.PublicAddress, "public", true)
-	return err
+	if _, err = db.AddNodeAddress(node.ID, cfg.PublicAddress, "public", true); err != nil {
+		return err
+	}
+	// Agent 依赖 data/node_id；不要依赖主机是否安装 sqlite3 CLI
+	if cfg.DataDir != "" {
+		_ = os.MkdirAll(cfg.DataDir, 0o755)
+		if err := os.WriteFile(filepath.Join(cfg.DataDir, "node_id"), []byte(node.ID+"\n"), 0o600); err != nil {
+			return fmt.Errorf("write node_id: %w", err)
+		}
+	}
+	return nil
 }
