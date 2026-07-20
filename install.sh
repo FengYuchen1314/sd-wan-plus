@@ -73,6 +73,11 @@ REPO="https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master"
 curl -fsSL "$REPO/server/main.py" -o "$INSTALL_DIR/main.py"
 curl -fsSL "$REPO/server/requirements.txt" -o "$INSTALL_DIR/requirements.txt"
 
+log "下载前端面板..."
+curl -fsSL "$REPO/web-dist.tar.gz" -o /tmp/pw-web-dist.tar.gz
+tar -xzf /tmp/pw-web-dist.tar.gz -C "$INSTALL_DIR/"
+rm -f /tmp/pw-web-dist.tar.gz
+
 log "安装 Python 环境..."
 cd "$INSTALL_DIR"
 python3 -m venv .venv
@@ -91,6 +96,7 @@ PW_WEB_PORT=$WEB_PORT
 PW_WG_PORT_START=$WG_START
 PW_WG_PORT_END=$((WG_START + 49))
 PW_PUBLIC_ADDRESS=$PUBLIC_IP
+PW_STATIC_DIR=$INSTALL_DIR/dist
 PW_INITIAL_ADMIN_PASSWORD=$PASS
 EOF
 
