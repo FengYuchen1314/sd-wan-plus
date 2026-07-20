@@ -127,7 +127,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 400, map[string]string{"message": "wg_public_key required with wg_private_key"})
 		return
 	} else if wgPub == wgPriv {
-		writeJSON(w, 400, map[string]string{"message": "invalid wg keypair: public key equals private (install wireguard-tools and retry)"})
+		writeJSON(w, 400, map[string]string{"message": "invalid wg keypair: public key equals private (use pathweaver-cli wg-keypair / upgrade installer)"})
 		return
 	}
 	encPriv, err := s.box.Encrypt(wgPriv)

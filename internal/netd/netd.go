@@ -10,8 +10,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
+	"golang.zx2c4.com/wireguard/wgctrl"
+	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 const DefaultSocket = "/run/pathweaver/netd.sock"
@@ -151,35 +154,11 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 
 	for _, l := range st.WireGuardLinks {
 		_ = run("ip", "link", "add", "dev", l.InterfaceName, "type", "wireguard")
-		// WireGuard 语义（规格）:
-		// - 主动端(IsInitiator): 设置 Endpoint + PersistentKeepalive，负责单向发起握手
-		// - 被动端: 只 ListenPort，不写 Endpoint；内核在收到握手后动态学习对端地址并维护
-		conf := fmt.Sprintf("[Interface]\nPrivateKey = %s\n", l.NodePrivateKey)
-		if !l.IsInitiator && l.ListenPort > 0 {
-			conf += fmt.Sprintf("ListenPort = %d\n", l.ListenPort)
-		}
-		conf += fmt.Sprintf("\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\n", l.PeerPublicKey, l.PeerOverlayIP)
-		if l.IsInitiator {
-			if l.PeerEndpoint == "" {
-				return fmt.Errorf("initiator link %s missing peer endpoint", l.LinkID)
-			}
-			conf += fmt.Sprintf("Endpoint = %s\n", l.PeerEndpoint)
-			ka := l.PersistentKeepalive
-			if ka == 0 {
-				ka = 25
-			}
-			conf += fmt.Sprintf("PersistentKeepalive = %d\n", ka)
-		}
-		// 被动端故意不写 Endpoint / Keepalive → 由 WireGuard 动态维护对端地址
-		tmp := filepath.Join(os.TempDir(), l.InterfaceName+".conf")
-		if err := os.WriteFile(tmp, []byte(conf), 0o600); err != nil {
-			return err
-		}
-		if err := run("wg", "setconf", l.InterfaceName, tmp); err != nil {
+		// 优先用内置 wgctrl（不依赖 wireguard-tools 的 wg 命令）；失败再回退 wg setconf
+		if err := configureWG(l); err != nil {
 			return err
 		}
 		_ = run("ip", "link", "set", l.InterfaceName, "up")
-		// wg setconf does not install AllowedIPs routes (unlike wg-quick).
 		// Overlay IP lives on pw-lo; force src so ICMP/TCP use overlay, not underlay eth0.
 		if l.PeerOverlayIP != "" {
 			args := []string{"route", "replace", l.PeerOverlayIP + "/32", "dev", l.InterfaceName}
@@ -208,6 +187,102 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 		}
 	}
 	return nil
+}
+
+func configureWG(l core.WireGuardLinkCfg) error {
+	if err := configureWGCtrl(l); err == nil {
+		return nil
+	} else {
+		log.Printf("wgctrl configure %s: %v — fallback to wg setconf", l.InterfaceName, err)
+	}
+	return configureWGSetconf(l)
+}
+
+func configureWGCtrl(l core.WireGuardLinkCfg) error {
+	priv, err := wgtypes.ParseKey(l.NodePrivateKey)
+	if err != nil {
+		return fmt.Errorf("private key: %w", err)
+	}
+	peerPub, err := wgtypes.ParseKey(l.PeerPublicKey)
+	if err != nil {
+		return fmt.Errorf("peer public key: %w", err)
+	}
+	_, ipNet, err := net.ParseCIDR(l.PeerOverlayIP + "/32")
+	if err != nil {
+		return fmt.Errorf("peer overlay: %w", err)
+	}
+	peer := wgtypes.PeerConfig{
+		PublicKey:         peerPub,
+		ReplaceAllowedIPs: true,
+		AllowedIPs:        []net.IPNet{*ipNet},
+	}
+	cfg := wgtypes.Config{
+		PrivateKey:   &priv,
+		ReplacePeers: true,
+		Peers:        []wgtypes.PeerConfig{peer},
+	}
+	if !l.IsInitiator && l.ListenPort > 0 {
+		p := int(l.ListenPort)
+		cfg.ListenPort = &p
+	}
+	if l.IsInitiator {
+		if l.PeerEndpoint == "" {
+			return fmt.Errorf("initiator link %s missing peer endpoint", l.LinkID)
+		}
+		host, portStr, err := net.SplitHostPort(l.PeerEndpoint)
+		if err != nil {
+			return fmt.Errorf("peer endpoint: %w", err)
+		}
+		var port int
+		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port <= 0 {
+			return fmt.Errorf("peer endpoint port: %q", portStr)
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			ips, err := net.LookupIP(host)
+			if err != nil || len(ips) == 0 {
+				return fmt.Errorf("resolve endpoint %s: %v", host, err)
+			}
+			ip = ips[0]
+		}
+		peer.Endpoint = &net.UDPAddr{IP: ip, Port: port}
+		ka := time.Duration(l.PersistentKeepalive) * time.Second
+		if ka == 0 {
+			ka = 25 * time.Second
+		}
+		peer.PersistentKeepaliveInterval = &ka
+		cfg.Peers[0] = peer
+	}
+	client, err := wgctrl.New()
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	return client.ConfigureDevice(l.InterfaceName, cfg)
+}
+
+func configureWGSetconf(l core.WireGuardLinkCfg) error {
+	conf := fmt.Sprintf("[Interface]\nPrivateKey = %s\n", l.NodePrivateKey)
+	if !l.IsInitiator && l.ListenPort > 0 {
+		conf += fmt.Sprintf("ListenPort = %d\n", l.ListenPort)
+	}
+	conf += fmt.Sprintf("\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\n", l.PeerPublicKey, l.PeerOverlayIP)
+	if l.IsInitiator {
+		if l.PeerEndpoint == "" {
+			return fmt.Errorf("initiator link %s missing peer endpoint", l.LinkID)
+		}
+		conf += fmt.Sprintf("Endpoint = %s\n", l.PeerEndpoint)
+		ka := l.PersistentKeepalive
+		if ka == 0 {
+			ka = 25
+		}
+		conf += fmt.Sprintf("PersistentKeepalive = %d\n", ka)
+	}
+	tmp := filepath.Join(os.TempDir(), l.InterfaceName+".conf")
+	if err := os.WriteFile(tmp, []byte(conf), 0o600); err != nil {
+		return err
+	}
+	return run("wg", "setconf", l.InterfaceName, tmp)
 }
 
 func run(name string, args ...string) error {

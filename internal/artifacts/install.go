@@ -71,19 +71,20 @@ fetch pathweaver-controller "$INSTALL_DIR/bin/pathweaver-controller" 1
 # 缓存 install 脚本供本节点继续做父节点；链式首装不再 exec 它（避免旧脚本自拷贝退出）
 fetch install-node.sh       "$INSTALL_DIR/artifacts/install-node.sh" 1
 
-echo "[deps] 安装 WireGuard / iproute2（overlay 互通必需）..."
+echo "[deps] 确保内核 WireGuard 可用（密钥由 pathweaver-cli 内置生成，不强制 wireguard-tools）..."
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -y >/dev/null 2>&1 || true
-  apt-get install -y wireguard-tools iproute2 python3 curl ca-certificates >/dev/null 2>&1 || \
-    apt-get install -y wireguard-tools iproute2 python3 curl ca-certificates
-fi
-if ! command -v wg >/dev/null 2>&1; then
-  echo "未找到 wg（wireguard-tools）。请先安装后再装节点。" >&2
-  exit 1
+  apt-get install -y iproute2 python3 curl ca-certificates >/dev/null 2>&1 || true
+  # 可选：便于手工 wg show 排查；netd 已内置 wgctrl，不依赖此包
+  apt-get install -y wireguard-tools >/dev/null 2>&1 || true
 fi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "未找到 python3。" >&2
+  exit 1
+fi
+if [[ ! -x "$INSTALL_DIR/bin/pathweaver-cli" ]]; then
+  echo "缺少 pathweaver-cli，无法生成 WireGuard 密钥。" >&2
   exit 1
 fi
 
@@ -185,9 +186,10 @@ fi
 [[ -n "$ADDR_TYPE" ]] || { if [[ "$HAS_PUBLIC" == "1" ]]; then ADDR_TYPE=public; else ADDR_TYPE=lan; fi; }
 
 echo "[enroll] 向父节点注册 (advertise=$ADVERTISE_ADDR type=$ADDR_TYPE)..."
-WG_PRIV=$(wg genkey)
-WG_PUB=$(printf '%%s' "$WG_PRIV" | wg pubkey)
-[[ -n "$WG_PUB" && "$WG_PUB" != "$WG_PRIV" ]] || { echo "wg pubkey 失败"; exit 1; }
+mapfile -t _kp < <("$INSTALL_DIR/bin/pathweaver-cli" wg-keypair)
+WG_PRIV=${_kp[0]:-}
+WG_PUB=${_kp[1]:-}
+[[ -n "$WG_PRIV" && -n "$WG_PUB" && "$WG_PUB" != "$WG_PRIV" ]] || { echo "内置 wg-keypair 失败"; exit 1; }
 umask 077; echo "$WG_PRIV" > "$INSTALL_DIR/data/wg_private.key"
 RESP=$(
   PW_BASE="$BASE" PW_TOKEN="$TOKEN" PW_NAME="$NAME" PW_WG_PUB="$WG_PUB" PW_WG_PRIV="$WG_PRIV" PW_VER="%s" \
