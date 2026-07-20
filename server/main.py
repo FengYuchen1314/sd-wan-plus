@@ -198,7 +198,10 @@ async def create_token(req: Request):
                (tid, tok, pid, name, exp, now()))
     db.commit()
 
-    cmd = f"curl -fsSL 'https://{PUBLIC_IP}:{NODE_PORT}/bootstrap/install.sh?token={tok}' | sudo bash"
+    # 安装命令指向父节点的可达地址
+    parent_addr = parent.get("overlay_ip", PUBLIC_IP)
+    parent_web_port = WEB_PORT  # 父节点监听同一个Web端口
+    cmd = f"curl -fsSL 'http://{parent_addr}:{parent_web_port}/bootstrap/install.sh?token={tok}' | sudo bash"
     return {"token_id": tid, "token": tok, "install_command": cmd, "expires_at": exp}
 
 @app.post("/bootstrap/enroll")
@@ -247,6 +250,10 @@ async def bootstrap_enroll(req: Request):
          agent_ver, proto_ver, now(), now(), now()))
     db.execute("UPDATE enrollment_tokens SET used_at=? WHERE id=?", (now(), tok["id"]))
     db.commit()
+
+    # 使用父节点的可达地址 (不是控制机公网IP)
+    parent_addr = parent.get("overlay_ip", PUBLIC_IP)
+    parent_web = parent.get("node_port", WEB_PORT)  # 子节点也是Web服务端口
 
     return {
         "node_id": nid, "overlay_ipv4": new_ip,
@@ -488,7 +495,11 @@ async def serve_server_py():
 # ─── Bootstrap install script ───
 @app.get("/bootstrap/install.sh")
 async def bootstrap_install(token: str = "", parent_ip: str = None, parent_port: int = None):
-    pip = parent_ip or PUBLIC_IP
+    # 父节点地址: 优先从URL参数取，回退到请求方IP
+    if not parent_ip:
+        pip = PUBLIC_IP
+    else:
+        pip = parent_ip
     ppt = parent_port or WEB_PORT
     script = f"""#!/bin/bash
 set -e
@@ -501,48 +512,88 @@ TOKEN="{token}"
 mkdir -p /opt/pathweaver/{{bin,etc,deps}}
 apt-get update -qq && apt-get install -y -qq python3 python3-venv curl wireguard-tools nftables 2>/dev/null || true
 
-# 从父节点下载 Python 依赖
+# 从父节点下载 Python 依赖包 (链式传播: 父节点已缓存)
 echo "从父节点下载依赖包..."
-cd /opt/pathweaver/deps
-curl -sf "$PARENT/bootstrap/deps/list?token=$TOKEN" | while read f; do
-    echo "  -> $f"
-    curl -sfO "$PARENT/bootstrap/deps/$f?token=$TOKEN"
-done
+mkdir -p /opt/pathweaver/deps
+DEP_LIST=$(curl -sf "$PARENT/bootstrap/deps/list" 2>/dev/null || echo "")
+if [ -n "$DEP_LIST" ]; then
+    echo "$DEP_LIST" | while read f; do
+        [ -z "$f" ] && continue
+        echo "  -> $f"
+        curl -sf "$PARENT/bootstrap/deps/$f" -o "/opt/pathweaver/deps/$f"
+    done
+fi
 
-# 安装 Python 依赖 (离线模式)
+# 下载服务器程序
+echo "下载服务器程序..."
+curl -sf "$PARENT/bootstrap/server.py" -o /opt/pathweaver/main.py
+
+# 安装 Python 依赖 (离线, 从本地缓存)
 python3 -m venv /opt/pathweaver/.venv
 source /opt/pathweaver/.venv/bin/activate
-pip install --no-index --find-links=/opt/pathweaver/deps /opt/pathweaver/deps/*.whl 2>/dev/null || true
-
-# 下载服务器主程序
-curl -sf "$PARENT/bootstrap/server.py?token=$TOKEN" -o /opt/pathweaver/main.py
+pip install --no-index --find-links=/opt/pathweaver/deps /opt/pathweaver/deps/*.whl 2>/dev/null || \
+    pip install --no-index --find-links=/opt/pathweaver/deps fastapi uvicorn bcrypt python-multipart 2>/dev/null || true
 
 # 生成密钥
-WG_PRIV=$(wg genkey 2>/dev/null || head -c32 /dev/urandom | od -A n -t x1 | tr -d ' \\n')
-WG_PUB=$(echo "$WG_PRIV" | wg pubkey 2>/dev/null || echo "auto-$(head -c16 /dev/urandom | base64)")
+WG_PRIV=$(wg genkey 2>/dev/null || head -c32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9+/' | head -c44)
+WG_PUB=$(echo "$WG_PRIV" | wg pubkey 2>/dev/null || echo "auto-wg-$(head -c16 /dev/urandom | base64)")
 ID_PRIV=$(head -c32 /dev/urandom | base64)
 ID_PUB=$(echo -n "$ID_PRIV" | sha256sum | cut -d' ' -f1)
 
 # 注册到父节点
-echo "注册节点..."
+echo "注册节点到父节点..."
 RESP=$(curl -sf $PARENT/bootstrap/enroll \\
     -H 'Content-Type: application/json' \\
     -d '{{"token":"$TOKEN","node_name":"$(hostname)","wg_public_key":"'$WG_PUB'","identity_public_key":"'$ID_PUB'","agent_version":"0.1.0","protocol_version":1}}')
 
 NODE_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['node_id'])")
 OVERLAY_IP=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['overlay_ipv4'])")
+PARENT_WG=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['parent_wg_public_key'])")
+PARENT_EP=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['parent_wg_endpoint'])")
 
+# 保存配置 (包括父节点信息)
 cat > /opt/pathweaver/etc/node.conf << EOFCONF
 NODE_ID=$NODE_ID
 OVERLAY_IP=$OVERLAY_IP
 WG_PRIV=$WG_PRIV
-WG_PUB=$WG_PUB
-PARENT={pip}:{ppt}
-EOFCONF
+PARENT_WG_PUB=$PARENT_WG
+PARENT_ENDPOINT=$PARENT_EP
+PW_WEB_PORT={ppt}
+EOF
 
-echo ""; echo "=== 节点入网成功 ==="
-echo "节点 ID:   $NODE_ID"
-echo "Overlay IP: $OVERLAY_IP"""
+# 启动本节点服务 (使其可作为下一级父节点)
+cat > /etc/systemd/system/pathweaver.service << EOF
+[Unit]
+Description=PathWeaver Node
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/pathweaver/.venv/bin/python3 /opt/pathweaver/main.py
+Environment=PW_WEB_PORT={ppt}
+Environment=PW_PUBLIC_ADDRESS=$OVERLAY_IP
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable pathweaver
+systemctl start pathweaver
+
+echo ""
+echo "=========================================取==========================================[32m  节点入网成功![0m"
+echo "=========================================取=========================================="
+echo "  节点 ID:     $NODE_ID"
+echo "  Overlay IP:  $OVERLAY_IP"
+echo "  父节点:      {pip}:{ppt}"
+echo "  本节点已启动服务，可接入下一级子节点"
+echo "=========================================取=========================================="
+
+# 清理安装脚本自身
+rm -f /tmp/pw-install.sh"""
     return HTMLResponse(script, media_type="text/plain")
 
 # ─── Static Files ───
@@ -576,6 +627,12 @@ a{{color:#38bdf8}}code{{background:#1e293b;padding:3px 8px;border-radius:4px}}</
 
 # ─── Start ───
 def main():
+    # 控制机: 下载并缓存 Python 依赖 (供子节点链式下载)
+    if os.getenv("PW_CONTROLLER", "1") == "1":
+        print("  [controller] caching python deps...")
+        try: download_deps()
+        except Exception as e: print(f"  [warn] deps cache failed: {e}")
+
     # Ensure controller node exists on first run
     db = get_db()
     existing = db.execute("SELECT id FROM nodes WHERE is_controller=1").fetchone()
