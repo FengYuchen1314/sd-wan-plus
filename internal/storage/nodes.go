@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
@@ -235,3 +236,145 @@ func (db *DB) ChildrenOf(parentID string) ([]core.Node, error) {
 	}
 	return out, nil
 }
+
+// NodeDeleteImpact summarizes what deleting a node would affect (panel confirm UX).
+type NodeDeleteImpact struct {
+	NodeID       string   `json:"node_id"`
+	DisplayName  string   `json:"display_name"`
+	IsController bool     `json:"is_controller"`
+	CanDelete    bool     `json:"can_delete"`
+	BlockReason  string   `json:"block_reason,omitempty"`
+	ChildCount   int      `json:"child_count"`
+	ChildNames   []string `json:"child_names,omitempty"`
+	LinkCount    int      `json:"link_count"`
+	LinkIDs      []string `json:"link_ids,omitempty"`
+	Warning      string   `json:"warning,omitempty"`
+}
+
+func (db *DB) NodeDeleteImpact(id string) (*NodeDeleteImpact, error) {
+	n, err := db.GetNode(id)
+	if err != nil {
+		return nil, err
+	}
+	out := &NodeDeleteImpact{
+		NodeID: n.ID, DisplayName: n.DisplayName, IsController: n.IsController,
+		CanDelete: true,
+	}
+	if n.IsController {
+		out.CanDelete = false
+		out.BlockReason = "控制机不可删除。如需重建，请整机卸载后重装控制机。"
+		return out, nil
+	}
+	children, err := db.ChildrenOf(id)
+	if err != nil {
+		return nil, err
+	}
+	out.ChildCount = len(children)
+	for _, c := range children {
+		out.ChildNames = append(out.ChildNames, c.DisplayName)
+	}
+	if out.ChildCount > 0 {
+		out.CanDelete = false
+		out.BlockReason = fmt.Sprintf("仍有 %d 个控制树下级，请先删除或迁移下级节点。", out.ChildCount)
+	}
+	links, err := db.ListLinks()
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range links {
+		if l.NodeA == id || l.NodeB == id {
+			out.LinkCount++
+			out.LinkIDs = append(out.LinkIDs, l.ID)
+		}
+	}
+	out.Warning = fmt.Sprintf("将删除节点「%s」及 %d 条相邻 WireGuard 链路，并自动发布新配置。请随后在该设备上执行卸载。",
+		n.DisplayName, out.LinkCount)
+	return out, nil
+}
+
+func execIgnoreMissing(tx *sql.Tx, query string, args ...any) error {
+	_, err := tx.Exec(query, args...)
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "no such table") {
+		return nil
+	}
+	return err
+}
+
+func (db *DB) DeleteNode(id string) error {
+	impact, err := db.NodeDeleteImpact(id)
+	if err != nil {
+		return err
+	}
+	if !impact.CanDelete {
+		return fmt.Errorf("%s", impact.BlockReason)
+	}
+	tx, err := db.SQL.Begin()
+	if err != nil {
+		return err
+	}
+	rollback := func(e error) error { _ = tx.Rollback(); return e }
+
+	rows, err := tx.Query(`SELECT id FROM wireguard_links WHERE node_a=? OR node_b=?`, id, id)
+	if err != nil {
+		return rollback(err)
+	}
+	var linkIDs []string
+	for rows.Next() {
+		var lid string
+		if err := rows.Scan(&lid); err != nil {
+			rows.Close()
+			return rollback(err)
+		}
+		linkIDs = append(linkIDs, lid)
+	}
+	rows.Close()
+	for _, lid := range linkIDs {
+		if err := execIgnoreMissing(tx, `DELETE FROM wireguard_link_endpoints WHERE link_id=?`, lid); err != nil {
+			return rollback(err)
+		}
+		if _, err := tx.Exec(`DELETE FROM wireguard_links WHERE id=?`, lid); err != nil {
+			return rollback(err)
+		}
+	}
+
+	if err := execIgnoreMissing(tx, `DELETE FROM control_relations WHERE parent_id=? OR child_id=?`, id, id); err != nil {
+		return rollback(err)
+	}
+	if err := execIgnoreMissing(tx, `DELETE FROM node_addresses WHERE node_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if err := execIgnoreMissing(tx, `DELETE FROM enrollment_tokens WHERE parent_node_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if err := execIgnoreMissing(tx, `DELETE FROM update_targets WHERE node_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if err := execIgnoreMissing(tx, `DELETE FROM config_rollout_nodes WHERE node_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if err := execIgnoreMissing(tx, `DELETE FROM node_desired_configs WHERE node_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if err := execIgnoreMissing(tx, `DELETE FROM heartbeats WHERE node_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if err := execIgnoreMissing(tx, `DELETE FROM node_port_pools WHERE node_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	if err := execIgnoreMissing(tx, `DELETE FROM traffic_policy_paths WHERE node_id=?`, id); err != nil {
+		return rollback(err)
+	}
+	_ = execIgnoreMissing(tx, `UPDATE traffic_policy_matches SET source_node_id=NULL WHERE source_node_id=?`, id)
+	_ = execIgnoreMissing(tx, `UPDATE traffic_policy_matches SET destination_node_id=NULL WHERE destination_node_id=?`, id)
+	_ = execIgnoreMissing(tx, `UPDATE traffic_policy_configs SET egress_node_id=NULL WHERE egress_node_id=?`, id)
+	_ = execIgnoreMissing(tx, `UPDATE nodes SET control_parent_id=NULL WHERE control_parent_id=?`, id)
+
+	if _, err := tx.Exec(`DELETE FROM nodes WHERE id=?`, id); err != nil {
+		return rollback(err)
+	}
+	return tx.Commit()
+}
+

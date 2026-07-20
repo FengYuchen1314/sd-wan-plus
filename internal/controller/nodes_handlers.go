@@ -118,6 +118,46 @@ func (s *Server) handleAddAddress(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, a)
 }
 
+func (s *Server) handleDeleteNodeImpact(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	impact, err := s.db.NodeDeleteImpact(id)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"message": "node not found"})
+		return
+	}
+	writeJSON(w, 200, impact)
+}
+
+func (s *Server) handleDeleteNode(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	impact, err := s.db.NodeDeleteImpact(id)
+	if err != nil {
+		writeJSON(w, 404, map[string]string{"message": "node not found"})
+		return
+	}
+	if !impact.CanDelete {
+		writeJSON(w, 409, map[string]string{"code": string(core.ErrConflict), "message": impact.BlockReason})
+		return
+	}
+	if err := s.db.DeleteNode(id); err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	s.mu.Lock()
+	delete(s.desired, id)
+	s.mu.Unlock()
+	if _, err := s.publishConfig("auto after delete node " + impact.DisplayName); err != nil {
+		log.Printf("publish after delete node: %v", err)
+	}
+	admin := adminFrom(r.Context())
+	_ = s.db.AddAudit(&admin.ID, "delete_node", "node", &id, impact.DisplayName, clientIP(r))
+	s.notify("nodes", map[string]any{"deleted": id})
+	writeJSON(w, 200, map[string]any{
+		"status": "ok", "deleted": id, "impact": impact,
+		"note": "节点已从控制面移除并已发布配置。请在该设备上执行卸载脚本清理本机服务。",
+	})
+}
+
 func (s *Server) handleListLinks(w http.ResponseWriter, r *http.Request) {
 	links, err := s.db.ListLinks()
 	if err != nil {

@@ -32,6 +32,8 @@ export const api = {
   renameNode: (id: string, display_name: string) =>
     request(`/api/nodes/${id}/rename`, { method: 'PUT', body: JSON.stringify({ display_name }) }),
   updateNode: (id: string, body: any) => request(`/api/nodes/${id}`, { method: 'PUT', body: JSON.stringify(body) }),
+  deleteNodeImpact: (id: string) => request<any>(`/api/nodes/${id}/delete-impact`),
+  deleteNode: (id: string) => request(`/api/nodes/${id}`, { method: 'DELETE' }),
   nodeAddresses: (id: string) => request<any[]>(`/api/nodes/${id}/addresses`),
   addAddress: (id: string, body: any) =>
     request(`/api/nodes/${id}/addresses`, { method: 'POST', body: JSON.stringify(body) }),

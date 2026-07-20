@@ -146,6 +146,8 @@ func (s *Server) Router() http.Handler {
 		r.Get("/api/nodes", s.handleListNodes)
 		r.Put("/api/nodes/{id}", s.handleUpdateNode)
 		r.Put("/api/nodes/{id}/rename", s.handleRenameNode)
+		r.Get("/api/nodes/{id}/delete-impact", s.handleDeleteNodeImpact)
+		r.Delete("/api/nodes/{id}", s.handleDeleteNode)
 		r.Get("/api/nodes/{id}/addresses", s.handleListAddresses)
 		r.Post("/api/nodes/{id}/addresses", s.handleAddAddress)
 
