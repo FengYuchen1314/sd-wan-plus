@@ -95,9 +95,13 @@ pub async fn create_link(
 }
 
 pub async fn list_links(
-    State(_state): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
 ) -> impl IntoResponse {
-    (StatusCode::OK, Json(json!({ "links": [] }))).into_response()
+    match pathweaver_storage::db::list_wireguard_links(state.db.pool()).await {
+        Ok(links) => (StatusCode::OK, Json(links)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() }))).into_response(),
+    }
 }
 
 pub async fn get_link(

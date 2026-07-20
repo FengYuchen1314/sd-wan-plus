@@ -53,6 +53,60 @@ pub async fn run_controller_with_static(
     let (_controller_private, controller_public) =
         pathweaver_security::crypto::generate_identity_keypair();
 
+    // 创建网络
+    let net = pathweaver_core::models::Network {
+        id: network_id,
+        name: "default".into(),
+        overlay_ipv4_cidr: "10.250.0.0/16".into(),
+        overlay_ipv6_cidr: None,
+        ipv6_enabled: false,
+        created_at: chrono::Utc::now(),
+    };
+    if pathweaver_storage::db::get_network(db.pool(), &network_id).await.unwrap_or(None).is_none() {
+        pathweaver_storage::db::create_network(db.pool(), &net).await?;
+    }
+
+    // 控制机自注册为第一个节点 (仅首次)
+    let existing_nodes = pathweaver_storage::db::list_all_nodes(db.pool()).await?;
+    let has_controller = existing_nodes.iter().any(|n| n.is_controller);
+
+    let ctrl_id = if has_controller {
+        let c = existing_nodes.iter().find(|n| n.is_controller).unwrap();
+        tracing::info!("已有控制机节点: {} ({})", c.display_name, c.id);
+        c.id
+    } else {
+        let cid = uuid::Uuid::new_v4();
+        let (wg_priv, wg_pub) = pathweaver_security::crypto::generate_wireguard_keypair();
+        let (id_priv, id_pub) = pathweaver_security::crypto::generate_identity_keypair();
+        let ctrl = pathweaver_core::models::Node {
+            id: cid,
+            display_name: "controller".into(),
+            overlay_ipv4: "10.250.0.1".parse().unwrap(),
+            overlay_ipv6: None,
+            wg_public_key: wg_pub,
+            wg_private_key_encrypted: wg_priv,
+            identity_public_key: id_pub,
+            identity_private_key_encrypted: id_priv,
+            control_parent_id: None,
+            node_service_port: std::env::var("PW_NODE_PORT").ok().and_then(|s| s.parse().ok()).unwrap_or(8444u16),
+            wg_port_range_start: std::env::var("PW_WG_PORT_START").ok().and_then(|s| s.parse().ok()).unwrap_or(30000u16),
+            wg_port_range_end: std::env::var("PW_WG_PORT_END").ok().and_then(|s| s.parse().ok()).unwrap_or(30999u16),
+            is_controller: true,
+            agent_version: Some("0.1.0".into()),
+            protocol_version: 1,
+            desired_generation: None,
+            active_generation: None,
+            created_at: chrono::Utc::now(),
+            updated_at: chrono::Utc::now(),
+            last_seen_at: Some(chrono::Utc::now()),
+            last_handshake_at: None,
+            enrollment_token_id: None,
+        };
+        pathweaver_storage::db::insert_node(db.pool(), &ctrl).await?;
+        tracing::info!("控制机自注册: {} (10.250.0.1)", cid);
+        cid
+    };
+
     let state = Arc::new(AppState {
         db,
         network_id,
