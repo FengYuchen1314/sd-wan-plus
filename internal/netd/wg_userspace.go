@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"strings"
 	"sync"
 
@@ -138,7 +139,7 @@ func buildUAPI(l core.WireGuardLinkCfg) (string, error) {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "private_key=%s\n", priv)
-	if !l.IsInitiator && l.ListenPort > 0 {
+	if l.ListenPort > 0 {
 		fmt.Fprintf(&b, "listen_port=%d\n", l.ListenPort)
 	}
 	b.WriteString("replace_peers=true\n")
@@ -146,16 +147,45 @@ func buildUAPI(l core.WireGuardLinkCfg) (string, error) {
 	if l.PeerOverlayIP != "" {
 		fmt.Fprintf(&b, "allowed_ip=%s/32\n", strings.TrimSpace(l.PeerOverlayIP))
 	}
-	if l.IsInitiator {
-		if strings.TrimSpace(l.PeerEndpoint) == "" {
-			return "", fmt.Errorf("initiator link %s missing peer endpoint", l.LinkID)
+	endpoint := strings.TrimSpace(l.PeerEndpoint)
+	if endpoint != "" {
+		if resolved, err := resolveEndpoint(endpoint); err == nil {
+			endpoint = resolved
 		}
-		fmt.Fprintf(&b, "endpoint=%s\n", strings.TrimSpace(l.PeerEndpoint))
+		fmt.Fprintf(&b, "endpoint=%s\n", endpoint)
 		ka := l.PersistentKeepalive
 		if ka == 0 {
 			ka = 25
 		}
 		fmt.Fprintf(&b, "persistent_keepalive_interval=%d\n", ka)
+	} else if l.IsInitiator {
+		return "", fmt.Errorf("initiator link %s missing peer endpoint", l.LinkID)
 	}
 	return b.String(), nil
+}
+
+func resolveEndpoint(ep string) (string, error) {
+	host, port, err := net.SplitHostPort(ep)
+	if err != nil {
+		return ep, err
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ep, nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil || len(ips) == 0 {
+		return ep, fmt.Errorf("resolve %s: %v", host, err)
+	}
+	// Prefer IPv4
+	var chosen net.IP
+	for _, ip := range ips {
+		if ip.To4() != nil {
+			chosen = ip.To4()
+			break
+		}
+	}
+	if chosen == nil {
+		chosen = ips[0]
+	}
+	return net.JoinHostPort(chosen.String(), port), nil
 }

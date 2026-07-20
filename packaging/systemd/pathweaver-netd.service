@@ -1,5 +1,5 @@
 [Unit]
-Description=PathWeaver netd
+Description=PathWeaver netd (wireguard-go)
 After=network-online.target
 
 [Service]
@@ -8,6 +8,7 @@ Restart=always
 RestartSec=3
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+DeviceAllow=/dev/net/tun rw
 
 [Install]
 WantedBy=multi-user.target

@@ -51,6 +51,7 @@ func TestBuildUAPIListener(t *testing.T) {
 		LinkID: "l2", InterfaceName: "pwl-l2", IsInitiator: false,
 		NodePrivateKey: priv, PeerPublicKey: peerPub,
 		ListenPort: 14310, PeerOverlayIP: "10.250.0.1",
+		PeerEndpoint: "10.0.0.2:14311", PersistentKeepalive: 25,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -58,8 +59,8 @@ func TestBuildUAPIListener(t *testing.T) {
 	if !strings.Contains(uapi, "listen_port=14310") {
 		t.Fatalf("want listen_port:\n%s", uapi)
 	}
-	if strings.Contains(uapi, "endpoint=") {
-		t.Fatal("listener should not set endpoint")
+	if !strings.Contains(uapi, "endpoint=10.0.0.2:14311") {
+		t.Fatalf("want endpoint:\n%s", uapi)
 	}
 }
 

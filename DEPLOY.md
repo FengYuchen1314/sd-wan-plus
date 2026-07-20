@@ -61,7 +61,17 @@ ip route | grep -E '10\.250\.|pwl-'
 ping -c 3 -I <本机overlay> <对端overlay>
 ```
 
-升级主控/节点后请重启 `pathweaver` 与 `pathweaver-netd`，再在控制台发布一次配置。
+升级主控/节点后请重启 `pathweaver` 与 `pathweaver-netd`，再在控制台**发布一次配置**（会自动把旧单向链路修成双侧 Listen+Endpoint）。
+
+若 ping 出现 `Destination address required` / `Destination Host Unreachable`：
+
+```bash
+# 两边
+ip -br link | grep pwl
+ip route | grep 10.250
+journalctl -u pathweaver-netd -u pathweaver-agent -n 40 --no-pager
+# 防火墙放行 UDP 14303-14399；子节点须能访问父节点该端口
+```
 
 ## systemd
 

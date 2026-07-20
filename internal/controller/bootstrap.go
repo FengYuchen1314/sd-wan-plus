@@ -181,7 +181,12 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	port, err := s.db.AllocateWGPort(parent.ID)
+	portL, err := s.db.AllocateWGPort(parent.ID)
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	portI, err := s.db.AllocateWGPort(node.ID)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"message": err.Error()})
 		return
@@ -191,28 +196,33 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	if len(addrs) > 0 {
 		listenerAddr = addrs[0].Address
 	}
+	ifaceA := storage.InterfaceName(parent.ID, node.ID)
+	ifaceB := storage.InterfaceName(node.ID, parent.ID)
 	link := &core.WireGuardLink{
 		NodeA: parent.ID, NodeB: node.ID, InitiatorNodeID: node.ID, ListenerNodeID: parent.ID,
-		ListenerAddress: listenerAddr, ListenerPort: port,
-		InterfaceNameA: fmt.Sprintf("pwl-%s", node.ID[:8]),
-		InterfaceNameB: fmt.Sprintf("pwl-%s", parent.ID[:8]),
+		ListenerAddress: listenerAddr, ListenerPort: portL,
+		InterfaceNameA: ifaceA, InterfaceNameB: ifaceB,
 		Enabled: true, AdminWeight: 1, Status: core.LinkActive,
 	}
-	if len(link.InterfaceNameA) > 15 {
-		link.InterfaceNameA = link.InterfaceNameA[:15]
-	}
-	if len(link.InterfaceNameB) > 15 {
-		link.InterfaceNameB = link.InterfaceNameB[:15]
-	}
 	_ = s.db.CreateLink(link)
-	ep := fmt.Sprintf("%s:%d", listenerAddr, port)
+	parentToChild := ""
+	if adv != "" {
+		parentToChild = fmt.Sprintf("%s:%d", adv, portI)
+	}
+	var parentEP *string
+	if parentToChild != "" {
+		parentEP = &parentToChild
+	}
 	_ = s.db.CreateLinkEndpoint(&core.WireGuardLinkEndpoint{
-		LinkID: link.ID, NodeID: parent.ID, InterfaceName: link.InterfaceNameA,
-		ListenPort: port, PeerPublicKey: wgPub, IsInitiator: false,
+		LinkID: link.ID, NodeID: parent.ID, InterfaceName: ifaceA,
+		ListenPort: portL, PeerEndpoint: parentEP, PeerPublicKey: wgPub,
+		PersistentKeepalive: 25, IsInitiator: false,
 	})
+	childToParent := fmt.Sprintf("%s:%d", listenerAddr, portL)
 	_ = s.db.CreateLinkEndpoint(&core.WireGuardLinkEndpoint{
-		LinkID: link.ID, NodeID: node.ID, InterfaceName: link.InterfaceNameB,
-		PeerEndpoint: &ep, PeerPublicKey: parent.WGPublicKey, PersistentKeepalive: 25, IsInitiator: true,
+		LinkID: link.ID, NodeID: node.ID, InterfaceName: ifaceB,
+		ListenPort: portI, PeerEndpoint: &childToParent, PeerPublicKey: parent.WGPublicKey,
+		PersistentKeepalive: 25, IsInitiator: true,
 	})
 
 	if _, err := s.publishConfig("auto after enroll " + node.DisplayName); err != nil {
@@ -223,7 +233,7 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{
 		"node_id": node.ID, "overlay_ipv4": ip, "network_id": netw.ID,
 		"parent_wg_public_key": parent.WGPublicKey,
-		"parent_wg_endpoint":   ep,
+		"parent_wg_endpoint":   childToParent,
 		"link_id":              link.ID,
 	})
 }
@@ -426,6 +436,9 @@ func BootstrapController(db *storage.DB, box *security.SecretBox, cfg Config, pa
 		_ = os.MkdirAll(cfg.DataDir, 0o755)
 		if err := os.WriteFile(filepath.Join(cfg.DataDir, "node_id"), []byte(node.ID+"\n"), 0o600); err != nil {
 			return fmt.Errorf("write node_id: %w", err)
+		}
+		if err := os.WriteFile(filepath.Join(cfg.DataDir, "wg_private.key"), []byte(wgPriv+"\n"), 0o600); err != nil {
+			return fmt.Errorf("write wg_private.key: %w", err)
 		}
 	}
 	return nil

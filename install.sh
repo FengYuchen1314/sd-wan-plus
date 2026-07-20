@@ -320,13 +320,14 @@ RestartSec=5
 WantedBy=multi-user.target"
 
   write_unit pathweaver-netd.service "[Unit]
-Description=PathWeaver netd
+Description=PathWeaver netd (wireguard-go)
 After=network-online.target
 [Service]
 ExecStart=$INSTALL_DIR/bin/pathweaver-netd
 Restart=always
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+DeviceAllow=/dev/net/tun rw
 [Install]
 WantedBy=multi-user.target"
 
@@ -509,13 +510,14 @@ PW_NODE_PORT=$NODE_PORT
 EOF
 
   write_unit pathweaver-netd.service "[Unit]
-Description=PathWeaver netd
+Description=PathWeaver netd (wireguard-go)
 After=network-online.target
 [Service]
 ExecStart=$INSTALL_DIR/bin/pathweaver-netd
 Restart=always
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+DeviceAllow=/dev/net/tun rw
 [Install]
 WantedBy=multi-user.target"
 

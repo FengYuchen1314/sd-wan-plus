@@ -224,13 +224,14 @@ echo -e "PW_NODE_ID=$NODE_ID\nPW_PARENT_URL=$BASE\nPW_SERVE_CHILDREN=1\nPW_NODE_
 
 cat > /etc/systemd/system/pathweaver-netd.service <<'UNIT'
 [Unit]
-Description=PathWeaver netd
+Description=PathWeaver netd (wireguard-go)
 After=network-online.target
 [Service]
 ExecStart=/opt/pathweaver/bin/pathweaver-netd
 Restart=always
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_RAW
+DeviceAllow=/dev/net/tun rw
 [Install]
 WantedBy=multi-user.target
 UNIT

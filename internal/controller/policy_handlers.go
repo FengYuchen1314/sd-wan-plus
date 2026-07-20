@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"log"
 	"net/http"
 	"path/filepath"
@@ -175,6 +176,7 @@ func (s *Server) desiredSnapshot() map[string]*core.NodeDesiredState {
 
 // publishConfig compiles topology into desired state and makes it available to agents.
 func (s *Server) publishConfig(reason string) (*core.ConfigRevision, error) {
+	s.repairLinkEndpoints()
 	gen, err := s.db.NextGeneration()
 	if err != nil {
 		return nil, err
@@ -196,6 +198,59 @@ func (s *Server) publishConfig(reason string) (*core.ConfigRevision, error) {
 	}
 	s.mu.Unlock()
 	return rev, nil
+}
+
+// repairLinkEndpoints upgrades old one-way links to dual-listen so either side can dial.
+func (s *Server) repairLinkEndpoints() {
+	links, err := s.db.ListLinks()
+	if err != nil {
+		return
+	}
+	for _, l := range links {
+		eps, err := s.db.ListLinkEndpoints(l.ID)
+		if err != nil || len(eps) == 0 {
+			continue
+		}
+		var initEp, listenEp *core.WireGuardLinkEndpoint
+		for i := range eps {
+			if eps[i].IsInitiator {
+				initEp = &eps[i]
+			} else {
+				listenEp = &eps[i]
+			}
+		}
+		if initEp == nil || listenEp == nil {
+			continue
+		}
+		changed := false
+		if initEp.ListenPort <= 0 {
+			if p, err := s.db.AllocateWGPort(initEp.NodeID); err == nil {
+				initEp.ListenPort = p
+				changed = true
+			}
+		}
+		if initEp.PersistentKeepalive <= 0 {
+			initEp.PersistentKeepalive = 25
+			changed = true
+		}
+		if listenEp.PersistentKeepalive <= 0 {
+			listenEp.PersistentKeepalive = 25
+			changed = true
+		}
+		if (listenEp.PeerEndpoint == nil || *listenEp.PeerEndpoint == "") && initEp.ListenPort > 0 {
+			addrs, _ := s.db.ListNodeAddresses(initEp.NodeID)
+			if len(addrs) > 0 {
+				ep := fmt.Sprintf("%s:%d", addrs[0].Address, initEp.ListenPort)
+				listenEp.PeerEndpoint = &ep
+				changed = true
+			}
+		}
+		if changed {
+			_ = s.db.UpdateLinkEndpoint(initEp)
+			_ = s.db.UpdateLinkEndpoint(listenEp)
+			log.Printf("repaired link endpoints for %s (dual-listen)", l.ID)
+		}
+	}
 }
 
 // hydrateDesiredFromDB rebuilds in-memory desired state after controller restart.

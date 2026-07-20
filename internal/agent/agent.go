@@ -240,18 +240,22 @@ func (a *Agent) pullAndApply() {
 }
 
 func (a *Agent) injectLocalWGKey(st *core.NodeDesiredState) {
-	b, err := os.ReadFile(filepath.Join(a.cfg.DataDir, "wg_private.key"))
-	if err != nil {
-		return
-	}
-	key := strings.TrimSpace(string(b))
-	if key == "" {
-		return
+	path := filepath.Join(a.cfg.DataDir, "wg_private.key")
+	b, err := os.ReadFile(path)
+	key := ""
+	if err == nil {
+		key = strings.TrimSpace(string(b))
 	}
 	for i := range st.WireGuardLinks {
-		if strings.TrimSpace(st.WireGuardLinks[i].NodePrivateKey) == "" {
+		if strings.TrimSpace(st.WireGuardLinks[i].NodePrivateKey) == "" && key != "" {
 			st.WireGuardLinks[i].NodePrivateKey = key
 		}
+		if key == "" && strings.TrimSpace(st.WireGuardLinks[i].NodePrivateKey) != "" {
+			key = strings.TrimSpace(st.WireGuardLinks[i].NodePrivateKey)
+		}
+	}
+	if key != "" {
+		_ = os.WriteFile(path, []byte(key+"\n"), 0o600)
 	}
 }
 

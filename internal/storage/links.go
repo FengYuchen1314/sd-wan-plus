@@ -123,15 +123,28 @@ func (db *DB) AllocateWGPort(nodeID string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	used := map[int]bool{}
 	rows, err := db.SQL.Query(`SELECT listener_port FROM wireguard_links WHERE listener_node_id = ?`, nodeID)
 	if err != nil {
 		return 0, err
 	}
-	defer rows.Close()
-	used := map[int]bool{}
 	for rows.Next() {
 		var p int
 		if err := rows.Scan(&p); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		used[p] = true
+	}
+	rows.Close()
+	rows2, err := db.SQL.Query(`SELECT listen_port FROM wireguard_link_endpoints WHERE node_id = ? AND listen_port > 0`, nodeID)
+	if err != nil {
+		return 0, err
+	}
+	defer rows2.Close()
+	for rows2.Next() {
+		var p int
+		if err := rows2.Scan(&p); err != nil {
 			return 0, err
 		}
 		used[p] = true
@@ -142,6 +155,16 @@ func (db *DB) AllocateWGPort(nodeID string) (int, error) {
 		}
 	}
 	return 0, fmt.Errorf("no free WireGuard port in pool %d-%d", n.WGPortRangeStart, n.WGPortRangeEnd)
+}
+
+func (db *DB) UpdateLinkEndpoint(e *core.WireGuardLinkEndpoint) error {
+	ini := 0
+	if e.IsInitiator {
+		ini = 1
+	}
+	_, err := db.SQL.Exec(`UPDATE wireguard_link_endpoints SET interface_name=?, listen_port=?, peer_endpoint=?, peer_public_key=?, persistent_keepalive=?, is_initiator=? WHERE id=?`,
+		e.InterfaceName, e.ListenPort, NullStr(e.PeerEndpoint), e.PeerPublicKey, e.PersistentKeepalive, ini, e.ID)
+	return err
 }
 
 func InterfaceName(a, b string) string {

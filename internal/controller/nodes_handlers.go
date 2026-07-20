@@ -153,7 +153,13 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	if body.InitiatorNodeID == body.NodeB {
 		listener = body.NodeA
 	}
-	port, err := s.db.AllocateWGPort(listener)
+	initiator := body.InitiatorNodeID
+	portL, err := s.db.AllocateWGPort(listener)
+	if err != nil {
+		writeJSON(w, 400, map[string]string{"message": err.Error()})
+		return
+	}
+	portI, err := s.db.AllocateWGPort(initiator)
 	if err != nil {
 		writeJSON(w, 400, map[string]string{"message": err.Error()})
 		return
@@ -170,7 +176,7 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 	}
 	link := &core.WireGuardLink{
 		NodeA: body.NodeA, NodeB: body.NodeB, InitiatorNodeID: body.InitiatorNodeID,
-		ListenerNodeID: listener, ListenerAddress: body.ListenerAddress, ListenerPort: port,
+		ListenerNodeID: listener, ListenerAddress: body.ListenerAddress, ListenerPort: portL,
 		InterfaceNameA: storage.InterfaceName(body.NodeA, body.NodeB),
 		InterfaceNameB: storage.InterfaceName(body.NodeB, body.NodeA),
 		Enabled: body.Enabled, AdminWeight: weight, Status: core.LinkPending,
@@ -179,26 +185,33 @@ func (s *Server) handleCreateLink(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 500, map[string]string{"message": err.Error()})
 		return
 	}
-	// endpoints
-	aIsInit := body.InitiatorNodeID == body.NodeA
+	// Dual-listen: both sides ListenPort; initiator dials listener; listener dials initiator when reachable
+	initAdv := body.ListenerAddress // placeholder; prefer initiator's advertise below
+	if addrs, _ := s.db.ListNodeAddresses(initiator); len(addrs) > 0 {
+		initAdv = addrs[0].Address
+	}
+	listenToInit := fmt.Sprintf("%s:%d", body.ListenerAddress, portL)
+	initToListen := fmt.Sprintf("%s:%d", initAdv, portI)
 	epA := &core.WireGuardLinkEndpoint{
 		LinkID: link.ID, NodeID: body.NodeA, InterfaceName: link.InterfaceNameA,
-		PeerPublicKey: nb.WGPublicKey, IsInitiator: aIsInit,
+		PeerPublicKey: nb.WGPublicKey, PersistentKeepalive: 25,
+		IsInitiator: body.InitiatorNodeID == body.NodeA,
 	}
 	epB := &core.WireGuardLinkEndpoint{
 		LinkID: link.ID, NodeID: body.NodeB, InterfaceName: link.InterfaceNameB,
-		PeerPublicKey: na.WGPublicKey, IsInitiator: !aIsInit,
+		PeerPublicKey: na.WGPublicKey, PersistentKeepalive: 25,
+		IsInitiator: body.InitiatorNodeID == body.NodeB,
 	}
-	if aIsInit {
-		ep := fmt.Sprintf("%s:%d", body.ListenerAddress, port)
-		epA.PeerEndpoint = &ep
-		epA.PersistentKeepalive = 25
-		epB.ListenPort = port
+	if body.InitiatorNodeID == body.NodeA {
+		epA.ListenPort = portI
+		epA.PeerEndpoint = &listenToInit
+		epB.ListenPort = portL
+		epB.PeerEndpoint = &initToListen
 	} else {
-		ep := fmt.Sprintf("%s:%d", body.ListenerAddress, port)
-		epB.PeerEndpoint = &ep
-		epB.PersistentKeepalive = 25
-		epA.ListenPort = port
+		epB.ListenPort = portI
+		epB.PeerEndpoint = &listenToInit
+		epA.ListenPort = portL
+		epA.PeerEndpoint = &initToListen
 	}
 	_ = s.db.CreateLinkEndpoint(epA)
 	_ = s.db.CreateLinkEndpoint(epB)

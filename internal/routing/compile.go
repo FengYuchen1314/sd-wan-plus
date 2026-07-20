@@ -73,16 +73,38 @@ func Compile(db *storage.DB, generation uint64, box interface {
 				OverlayIP:      n.OverlayIPv4,
 				PeerOverlayIP:  peer.OverlayIPv4,
 			}
-			if isInit {
-				// 主动端：固定 Endpoint，keepalive 单向发起握手
+			// Prefer per-node endpoint rows (dual-listen + reverse dial)
+			if eps, err := db.ListLinkEndpoints(l.ID); err == nil {
+				for _, ep := range eps {
+					if ep.NodeID != n.ID {
+						continue
+					}
+					if ep.InterfaceName != "" {
+						cfg.InterfaceName = ep.InterfaceName
+					}
+					if ep.PeerPublicKey != "" {
+						cfg.PeerPublicKey = ep.PeerPublicKey
+					}
+					cfg.IsInitiator = ep.IsInitiator
+					cfg.ListenPort = uint32(ep.ListenPort)
+					cfg.PersistentKeepalive = uint32(ep.PersistentKeepalive)
+					if ep.PeerEndpoint != nil {
+						cfg.PeerEndpoint = *ep.PeerEndpoint
+					}
+					break
+				}
+			}
+			if cfg.PeerEndpoint == "" && cfg.IsInitiator {
 				cfg.PeerEndpoint = fmt.Sprintf("%s:%d", l.ListenerAddress, l.ListenerPort)
-				cfg.PersistentKeepalive = 25
-				cfg.ListenPort = 0
-			} else {
-				// 被动端：仅监听；Endpoint 由内核在收到握手后动态学习/维护
+				if cfg.PersistentKeepalive == 0 {
+					cfg.PersistentKeepalive = 25
+				}
+			}
+			if cfg.ListenPort == 0 && !cfg.IsInitiator {
 				cfg.ListenPort = uint32(l.ListenerPort)
-				cfg.PeerEndpoint = ""
-				cfg.PersistentKeepalive = 0
+			}
+			if cfg.PersistentKeepalive == 0 && cfg.PeerEndpoint != "" {
+				cfg.PersistentKeepalive = 25
 			}
 			st.WireGuardLinks = append(st.WireGuardLinks, cfg)
 		}
