@@ -15,6 +15,9 @@ NODE_PORT=14302
 WG_START=14303
 WG_END=14399
 PUBLIC_ADDR=""
+ADVERTISE_ADDR=""
+ADDR_TYPE=""   # public | lan
+HAS_PUBLIC=""  # 1 | 0 | empty=ask
 OVERLAY="10.250.0.0/16"
 ADMIN_PASS=""
 INSTALL_DIR=/opt/pathweaver
@@ -30,19 +33,22 @@ PathWeaver 统一安装包
 控制机选项:
   --name NAME              控制机显示名 (默认 controller)
   --password PASS          管理员密码 (否则交互输入)
-  --public-address ADDR    公网 IP/域名 (必填，或交互输入)
+  --public-address ADDR    公网 IP/域名（交互时会自动探测并确认）
   --web-port N             默认 14301
   --node-port N            默认 14302
   --wg-start N             默认 14303
   --wg-end N               默认 14399
   --overlay CIDR           默认 10.250.0.0/16
-  --noninteractive         非交互（需提供 --password 与 --public-address）
+  --noninteractive         非交互（需 --password 与 --public-address）
 
 子节点选项:
   --parent-url URL         父节点 bootstrap 地址，如 http://10.0.0.1:14302
   --token TOKEN            一次性接入 Token
   --name NAME              节点显示名
   --node-port N            本机节点服务端口 (默认 14302)
+  --advertise-address ADDR 本机可达地址（公网或内网，供下级接入）
+  --has-public-ip yes|no   本机是否有公网 IP
+  --noninteractive         非交互（需同时提供 --advertise-address 与 --has-public-ip）
 
 说明:
   - 主控与子节点二进制完全相同，角色由 --role 决定
@@ -58,6 +64,16 @@ while [[ $# -gt 0 ]]; do
     --name) NODE_NAME="$2"; CTRL_NAME="$2"; shift 2 ;;
     --password) ADMIN_PASS="$2"; shift 2 ;;
     --public-address) PUBLIC_ADDR="$2"; shift 2 ;;
+    --advertise-address) ADVERTISE_ADDR="$2"; shift 2 ;;
+    --has-public-ip)
+      _hp=$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')
+      case "$_hp" in
+        yes|y|1|true|public) HAS_PUBLIC=1; ADDR_TYPE=public ;;
+        no|n|0|false|lan|private) HAS_PUBLIC=0; ADDR_TYPE=lan ;;
+        *) echo "无效 --has-public-ip: $2 (yes|no)"; exit 1 ;;
+      esac
+      shift 2
+      ;;
     --web-port) WEB_PORT="$2"; shift 2 ;;
     --node-port) NODE_PORT="$2"; shift 2 ;;
     --wg-start) WG_START="$2"; shift 2 ;;
@@ -108,6 +124,52 @@ ask() {
     read -rp "$prompt" __val
   fi
   printf -v "$__var" '%s' "$__val"
+}
+
+# 探测出口公网 IP（多源兜底）
+detect_public_ip() {
+  local ip=""
+  local url
+  for url in \
+    "https://api.ipify.org" \
+    "https://ifconfig.me/ip" \
+    "https://icanhazip.com" \
+    "https://ipinfo.io/ip"
+  do
+    ip=$(curl -fsS --connect-timeout 3 --max-time 5 "$url" 2>/dev/null | tr -d ' \t\r\n' || true)
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || [[ "$ip" =~ : ]]; then
+      printf '%s' "$ip"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# 本机首个非回环 IPv4（作内网默认）
+detect_lan_ip() {
+  local ip=""
+  ip=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -n1 || true)
+  if [[ -n "$ip" ]]; then
+    printf '%s' "$ip"
+    return 0
+  fi
+  hostname -I 2>/dev/null | awk '{print $1}'
+}
+
+# 交互确认地址：detect_public_ip / detect_lan_ip + 可手动改
+confirm_address() {
+  # confirm_address "提示前缀" default_ip -> sets CONFIRMED_ADDR
+  local prefix=$1
+  local def=${2:-}
+  local entered=""
+  if [[ -n "$def" ]]; then
+    ask "${prefix} [${def}]（直接回车确认，或输入覆盖）: " entered
+    CONFIRMED_ADDR=${entered:-$def}
+  else
+    ask "${prefix}（必填）: " entered
+    CONFIRMED_ADDR=$entered
+  fi
+  [[ -n "$CONFIRMED_ADDR" ]] || { echo "地址不能为空"; return 1; }
 }
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -184,7 +246,21 @@ install_controller() {
       done
     fi
     if [[ -z "$PUBLIC_ADDR" ]]; then
-      ask "控制机公网地址: " PUBLIC_ADDR
+      echo "正在探测公网 IP..."
+      DETECTED=$(detect_public_ip || true)
+      if [[ -n "$DETECTED" ]]; then
+        echo "探测到公网 IP: $DETECTED"
+        confirm_address "控制机公网地址" "$DETECTED" || exit 1
+        PUBLIC_ADDR=$CONFIRMED_ADDR
+      else
+        echo "未能自动探测公网 IP，请手动填写（也可填域名）"
+        confirm_address "控制机公网地址" "" || exit 1
+        PUBLIC_ADDR=$CONFIRMED_ADDR
+      fi
+    else
+      echo "使用指定公网地址: $PUBLIC_ADDR"
+      ask "确认或修改 [$PUBLIC_ADDR]: " _a
+      PUBLIC_ADDR=${_a:-$PUBLIC_ADDR}
     fi
     ask "控制机名称 [$CTRL_NAME]: " _n
     CTRL_NAME=${_n:-$CTRL_NAME}
@@ -323,6 +399,53 @@ install_node() {
   [[ -n "$TOKEN" ]] || { echo "子节点需要 --token"; exit 1; }
   PARENT_URL="${PARENT_URL%/}"
 
+  if [[ "$NONINTERACTIVE" != "1" ]]; then
+    if ! ensure_tty; then
+      echo "当前无法交互。请改用："
+      echo "  sudo bash install.sh --role node --parent-url URL --token TOKEN \\"
+      echo "    --name NAME --advertise-address IP --has-public-ip yes|no --noninteractive"
+      exit 1
+    fi
+    if [[ "$NODE_NAME" == "node" ]]; then
+      ask "节点名称 [node]: " _n
+      NODE_NAME=${_n:-node}
+    fi
+    if [[ -z "$HAS_PUBLIC" ]]; then
+      echo ""
+      echo "本节点是否有公网 IP？"
+      echo "  - 有公网：下级可通过公网接入本节点"
+      echo "  - 无公网：填写内网 IP（仅同网段或已能路由到本机的设备可接入）"
+      while true; do
+        ask "有公网 IP？ [y/N]: " _ans
+        _ans_l=$(printf '%s' "$_ans" | tr '[:upper:]' '[:lower:]')
+        case "$_ans_l" in
+          y|yes) HAS_PUBLIC=1; ADDR_TYPE=public; break ;;
+          n|no|"") HAS_PUBLIC=0; ADDR_TYPE=lan; break ;;
+          *) echo "请输入 y 或 n" ;;
+        esac
+      done
+    fi
+    if [[ -z "$ADVERTISE_ADDR" ]]; then
+      if [[ "$HAS_PUBLIC" == "1" ]]; then
+        echo "正在探测公网 IP..."
+        DETECTED=$(detect_public_ip || true)
+        confirm_address "本节点公网地址（供下级接入）" "$DETECTED" || exit 1
+        ADVERTISE_ADDR=$CONFIRMED_ADDR
+      else
+        DETECTED=$(detect_lan_ip || true)
+        echo "探测到内网 IP: ${DETECTED:-无}"
+        confirm_address "本节点内网地址（供下级接入）" "$DETECTED" || exit 1
+        ADVERTISE_ADDR=$CONFIRMED_ADDR
+      fi
+    fi
+  fi
+
+  [[ -n "$ADVERTISE_ADDR" ]] || { echo "需要 --advertise-address（本机可达 IP）"; exit 1; }
+  if [[ -z "$ADDR_TYPE" ]]; then
+    if [[ "$HAS_PUBLIC" == "1" ]]; then ADDR_TYPE=public; else ADDR_TYPE=lan; fi
+  fi
+  [[ -n "$ADDR_TYPE" ]] || ADDR_TYPE=lan
+
   # 若当前目录已是完整包则本地安装；否则强制从父节点拉齐制品
   install_common_files
 
@@ -343,6 +466,7 @@ install_node() {
   RESP=$(
     PW_BASE="$PARENT_URL" PW_TOKEN="$TOKEN" PW_NAME="$NODE_NAME" \
     PW_WG_PUB="$WG_PUB" PW_WG_PRIV="$WG_PRIV" PW_VER="0.1.0" \
+    PW_ADV_ADDR="$ADVERTISE_ADDR" PW_ADDR_TYPE="$ADDR_TYPE" \
     python3 - <<'PY'
 import json, os, urllib.request
 payload = {
@@ -353,6 +477,9 @@ payload = {
   "identity_public_key": os.environ["PW_WG_PUB"],
   "agent_version": os.environ.get("PW_VER", "0.1.0"),
   "protocol_version": 1,
+  "advertise_address": os.environ.get("PW_ADV_ADDR", ""),
+  "address_type": os.environ.get("PW_ADDR_TYPE", "lan"),
+  "has_public_ip": os.environ.get("PW_ADDR_TYPE", "lan") == "public",
 }
 req = urllib.request.Request(
   os.environ["PW_BASE"].rstrip("/") + "/bootstrap/enroll",
@@ -367,6 +494,8 @@ PY
   NODE_ID=$(printf '%s' "$RESP" | sed -n 's/.*"node_id":"\([^"]*\)".*/\1/p')
   [[ -n "$NODE_ID" ]] || { echo "enroll 失败: $RESP"; exit 1; }
   echo "$NODE_ID" > "$INSTALL_DIR/data/node_id"
+  echo "$ADVERTISE_ADDR" > "$INSTALL_DIR/data/advertise_address"
+  echo "$ADDR_TYPE" > "$INSTALL_DIR/data/address_type"
 
   cat > "$INSTALL_DIR/data/agent.env" <<EOF
 PW_NODE_ID=$NODE_ID

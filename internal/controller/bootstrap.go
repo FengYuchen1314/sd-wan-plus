@@ -69,6 +69,9 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		IdentityPublicKey string `json:"identity_public_key"`
 		AgentVersion      string `json:"agent_version"`
 		ProtocolVersion   int    `json:"protocol_version"`
+		AdvertiseAddress  string `json:"advertise_address"`
+		AddressType       string `json:"address_type"` // public | lan
+		HasPublicIP       bool   `json:"has_public_ip"`
 	}
 	if err := readJSON(r, &body); err != nil {
 		writeJSON(w, 400, map[string]string{"message": err.Error()})
@@ -159,6 +162,21 @@ func (s *Server) handleEnroll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.db.CreateControlRelation(parent.ID, node.ID, t.ID)
+
+	addrType := strings.TrimSpace(body.AddressType)
+	if addrType == "" {
+		if body.HasPublicIP {
+			addrType = "public"
+		} else {
+			addrType = "lan"
+		}
+	}
+	adv := strings.TrimSpace(body.AdvertiseAddress)
+	if adv != "" {
+		if _, err := s.db.AddNodeAddress(node.ID, adv, addrType, true); err != nil {
+			log.Printf("enroll add address: %v", err)
+		}
+	}
 
 	port, err := s.db.AllocateWGPort(parent.ID)
 	if err != nil {

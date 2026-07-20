@@ -6,7 +6,7 @@
 
 ## 控制机一键安装
 
-在 Debian 12+ / Ubuntu 22.04+（x86_64 或 arm64）上执行（**带防缓存参数**，避免命中旧脚本）：
+在 Debian 12+ / Ubuntu 22.04+（x86_64 或 arm64）上执行：
 
 ```bash
 tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
@@ -14,7 +14,10 @@ tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
   -o "$tmp" && sudo bash "$tmp"; rm -f "$tmp"
 ```
 
-成功时应看到：`[pathweaver] install-controller.sh rev=...`，随后交互询问密码、公网地址等。
+交互时会：
+
+1. 自动探测公网 IP，回车确认或手动改写  
+2. 询问管理员密码、名称、端口等  
 
 非交互示例：
 
@@ -27,11 +30,65 @@ tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
     --name controller; rm -f "$tmp"
 ```
 
-安装完成后访问：`http://YOUR_PUBLIC_IP:14301`（用户名固定 `admin`）。
+安装完成后访问：`http://公网IP:14301`（用户名固定 `admin`）。
 
 默认端口：Web **14301**、节点服务 **14302**、WireGuard **14303–14399**。
 
-> 安装包由 GitHub Actions 在每次 push `master` 时自动编译发布；主控与子节点使用**同一包**，仅 `--role` 参数不同。
+## 完全卸载（换机前）
+
+一键清除服务、数据目录、`pw-lo` / `pwl-*` 接口：
+
+```bash
+tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+  "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/uninstall.sh?$(date +%s)" \
+  -o "$tmp" && sudo bash "$tmp"; rm -f "$tmp"
+```
+
+非交互（不询问确认）：
+
+```bash
+tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+  "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/uninstall.sh?$(date +%s)" \
+  -o "$tmp" && sudo bash "$tmp" -- --yes; rm -f "$tmp"
+```
+
+## 子节点接入（链式）
+
+在控制台「接入」复制安装命令后执行。交互时会询问：
+
+1. **本节点是否有公网 IP**  
+2. **有**：自动探测公网 IP，确认或手改（供下级接入）  
+3. **无**：探测内网 IP，确认或手改（仅同网段 / 可路由设备可接入本节点）
+
+也可直接：
+
+```bash
+curl -fsSL "http://PARENT_IP:14302/bootstrap/install.sh?token=TOKEN" -o /tmp/pw-node.sh
+sudo bash /tmp/pw-node.sh
+```
+
+或统一安装包：
+
+```bash
+sudo bash install.sh --role node \
+  --parent-url http://PARENT_IP:14302 \
+  --token ONE_TIME_TOKEN \
+  --name node-a \
+  --has-public-ip no \
+  --advertise-address 192.168.1.10
+```
+
+子节点**全部文件只从父节点拉取**，不访问 GitHub、不必直连控制机。
+
+## 防火墙
+
+控制机 / 有公网的父节点建议放行：
+
+```bash
+sudo ufw allow 14301/tcp
+sudo ufw allow 14302/tcp
+sudo ufw allow 14303:14399/udp
+```
 
 ## 架构
 
@@ -49,28 +106,9 @@ tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
 - **数据图**：WireGuard 链路，可交叉直连（图状）
 - **路径策略**：nftables + ip rule + 多路由表
 
-## 子节点接入（链式）
-
-在控制台「接入」复制命令，或在已解压的统一安装包目录执行：
-
-```bash
-sudo bash install.sh --role node \
-  --parent-url http://PARENT_IP:14302 \
-  --token ONE_TIME_TOKEN \
-  --name node-a
-```
-
-也可直接管道父节点生成的 bootstrap：
-
-```bash
-curl -fsSL "http://PARENT_IP:14302/bootstrap/install.sh?token=TOKEN" | sudo bash
-```
-
-子节点**全部文件只从父节点拉取**，不访问 GitHub、不必直连控制机。
-
 ## 一键更新
 
-控制机 UI「更新中心」创建并启动：制品沿控制树预分发 → 叶子优先安装。
+控制机 UI「更新中心」：制品沿控制树预分发 → 叶子优先安装。
 
 ## WireGuard
 
@@ -84,17 +122,13 @@ curl -fsSL "http://PARENT_IP:14302/bootstrap/install.sh?token=TOKEN" | sudo bash
 ## 从源码构建
 
 ```bash
-# 后端
 go build -o bin/pathweaver-controller ./cmd/pathweaver-controller
 go build -o bin/pathweaver-agent ./cmd/pathweaver-agent
 go build -o bin/pathweaver-netd ./cmd/pathweaver-netd
 go build -o bin/pathweaver-updater ./cmd/pathweaver-updater
 go build -o bin/pathweaver-cli ./cmd/pathweaver-cli
 
-# 前端
 cd web && npm install && npm run build && cd ..
-
-# 打统一安装包
 bash packaging/build-package.sh
 ```
 
