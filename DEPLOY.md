@@ -41,11 +41,27 @@ sudo ufw allow 14302/tcp
 sudo ufw allow 14303:14399/udp
 ```
 
+云厂商安全组也需放行 **UDP 14303–14399**（监听端 / 父节点）。
+
+### 数据面（wireguard-go）
+
+- Overlay 由各节点上的 **pathweaver-netd** 内嵌 **wireguard-go**（userspace）维护，**不依赖**内核 WireGuard 模块或 `wireguard-tools`。
+- 主控通过「发布配置」/ enroll·建链路后的自动发布，向每个节点下发 desired state；agent 调用 netd 热更新本机各条 `pwl-*` 链路。
+- 密钥由 `pathweaver-cli wg-keypair` 生成。
+
 ### 验证
 
 ```bash
-curl http://localhost:14301/api/health
+curl -sS http://127.0.0.1:14301/api/health
+# 各节点：
+ip -br addr show pw-lo
+ip -br link | grep pwl
+ip route | grep -E '10\.250\.|pwl-'
+# 用控制台显示的 overlay IP：
+ping -c 3 -I <本机overlay> <对端overlay>
 ```
+
+升级主控/节点后请重启 `pathweaver` 与 `pathweaver-netd`，再在控制台发布一次配置。
 
 ## systemd
 

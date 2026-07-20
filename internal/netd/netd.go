@@ -10,30 +10,28 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"time"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
-	"golang.zx2c4.com/wireguard/wgctrl"
-	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
 
 const DefaultSocket = "/run/pathweaver/netd.sock"
 
-// Server applies structured DesiredState via ip/wg/nft (Linux).
+// Server applies structured DesiredState via wireguard-go + ip/nft (Linux).
 type Server struct {
 	Socket   string
 	lastGood *core.NodeDesiredState
+	wg       *wgManager
 }
 
 func New(socket string) *Server {
 	if socket == "" {
 		socket = DefaultSocket
 	}
-	return &Server{Socket: socket}
+	return &Server{Socket: socket, wg: newWGManager()}
 }
 
 type Request struct {
-	Action string                `json:"action"` // prepare|activate|verify|rollback|status
+	Action string                 `json:"action"` // prepare|activate|verify|rollback|status
 	State  *core.NodeDesiredState `json:"state,omitempty"`
 }
 
@@ -46,6 +44,8 @@ type Response struct {
 func (s *Server) ListenAndServe() error {
 	if runtime.GOOS != "linux" {
 		log.Printf("netd: non-linux OS (%s), running in dry-run mode", runtime.GOOS)
+	} else {
+		log.Printf("netd: data plane = wireguard-go (userspace)")
 	}
 	_ = os.Remove(s.Socket)
 	if err := os.MkdirAll(filepath.Dir(s.Socket), 0o755); err != nil {
@@ -53,7 +53,6 @@ func (s *Server) ListenAndServe() error {
 	}
 	ln, err := net.Listen("unix", s.Socket)
 	if err != nil {
-		// Windows fallback: TCP localhost
 		ln, err = net.Listen("tcp", "127.0.0.1:18765")
 		if err != nil {
 			return err
@@ -65,6 +64,7 @@ func (s *Server) ListenAndServe() error {
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
+			s.wg.closeAll()
 			return err
 		}
 		go s.handle(conn)
@@ -105,7 +105,6 @@ func (s *Server) prepare(st *core.NodeDesiredState) Response {
 	if st.ConfigHash == "" {
 		return Response{OK: false, Error: "missing config_hash"}
 	}
-	// Validate structure only
 	if st.OverlayIdentity.DummyInterface == "" {
 		return Response{OK: false, Error: "missing overlay identity"}
 	}
@@ -142,9 +141,10 @@ func (s *Server) rollback() Response {
 
 func (s *Server) apply(st *core.NodeDesiredState) error {
 	if runtime.GOOS != "linux" {
-		log.Printf("netd dry-run apply generation=%d node=%s links=%d", st.Generation, st.NodeID, len(st.WireGuardLinks))
+		log.Printf("netd dry-run apply generation=%d node=%s links=%d (wireguard-go)", st.Generation, st.NodeID, len(st.WireGuardLinks))
 		return nil
 	}
+
 	// Overlay identity on dummy
 	if err := run("ip", "link", "add", st.OverlayIdentity.DummyInterface, "type", "dummy"); err != nil && !strings.Contains(err.Error(), "File exists") {
 		// ignore exists
@@ -152,11 +152,13 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 	_ = run("ip", "addr", "replace", st.OverlayIdentity.IPv4+"/32", "dev", st.OverlayIdentity.DummyInterface)
 	_ = run("ip", "link", "set", st.OverlayIdentity.DummyInterface, "up")
 
+	if err := s.wg.reconcile(st.WireGuardLinks); err != nil {
+		return err
+	}
+
 	for _, l := range st.WireGuardLinks {
-		_ = run("ip", "link", "add", "dev", l.InterfaceName, "type", "wireguard")
-		// 优先用内置 wgctrl（不依赖 wireguard-tools 的 wg 命令）；失败再回退 wg setconf
-		if err := configureWG(l); err != nil {
-			return err
+		if l.InterfaceName == "" {
+			continue
 		}
 		_ = run("ip", "link", "set", l.InterfaceName, "up")
 		// Overlay IP lives on pw-lo; force src so ICMP/TCP use overlay, not underlay eth0.
@@ -165,7 +167,9 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 			if st.OverlayIdentity.IPv4 != "" {
 				args = append(args, "src", st.OverlayIdentity.IPv4)
 			}
-			_ = run("ip", args...)
+			if err := run("ip", args...); err != nil {
+				log.Printf("netd: route %s via %s: %v", l.PeerOverlayIP, l.InterfaceName, err)
+			}
 		}
 	}
 
@@ -173,7 +177,6 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 		_ = run("sysctl", "-w", "net.ipv4.ip_forward=1")
 	}
 
-	// nftables + ip rule (best-effort)
 	for _, r := range st.PolicyRules {
 		_ = run("ip", "rule", "add", "fwmark", fmt.Sprintf("%d", r.Fwmark), "table", fmt.Sprintf("%d", r.TableID), "priority", fmt.Sprintf("%d", r.Priority+100))
 	}
@@ -187,102 +190,6 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 		}
 	}
 	return nil
-}
-
-func configureWG(l core.WireGuardLinkCfg) error {
-	if err := configureWGCtrl(l); err == nil {
-		return nil
-	} else {
-		log.Printf("wgctrl configure %s: %v — fallback to wg setconf", l.InterfaceName, err)
-	}
-	return configureWGSetconf(l)
-}
-
-func configureWGCtrl(l core.WireGuardLinkCfg) error {
-	priv, err := wgtypes.ParseKey(l.NodePrivateKey)
-	if err != nil {
-		return fmt.Errorf("private key: %w", err)
-	}
-	peerPub, err := wgtypes.ParseKey(l.PeerPublicKey)
-	if err != nil {
-		return fmt.Errorf("peer public key: %w", err)
-	}
-	_, ipNet, err := net.ParseCIDR(l.PeerOverlayIP + "/32")
-	if err != nil {
-		return fmt.Errorf("peer overlay: %w", err)
-	}
-	peer := wgtypes.PeerConfig{
-		PublicKey:         peerPub,
-		ReplaceAllowedIPs: true,
-		AllowedIPs:        []net.IPNet{*ipNet},
-	}
-	cfg := wgtypes.Config{
-		PrivateKey:   &priv,
-		ReplacePeers: true,
-		Peers:        []wgtypes.PeerConfig{peer},
-	}
-	if !l.IsInitiator && l.ListenPort > 0 {
-		p := int(l.ListenPort)
-		cfg.ListenPort = &p
-	}
-	if l.IsInitiator {
-		if l.PeerEndpoint == "" {
-			return fmt.Errorf("initiator link %s missing peer endpoint", l.LinkID)
-		}
-		host, portStr, err := net.SplitHostPort(l.PeerEndpoint)
-		if err != nil {
-			return fmt.Errorf("peer endpoint: %w", err)
-		}
-		var port int
-		if _, err := fmt.Sscanf(portStr, "%d", &port); err != nil || port <= 0 {
-			return fmt.Errorf("peer endpoint port: %q", portStr)
-		}
-		ip := net.ParseIP(host)
-		if ip == nil {
-			ips, err := net.LookupIP(host)
-			if err != nil || len(ips) == 0 {
-				return fmt.Errorf("resolve endpoint %s: %v", host, err)
-			}
-			ip = ips[0]
-		}
-		peer.Endpoint = &net.UDPAddr{IP: ip, Port: port}
-		ka := time.Duration(l.PersistentKeepalive) * time.Second
-		if ka == 0 {
-			ka = 25 * time.Second
-		}
-		peer.PersistentKeepaliveInterval = &ka
-		cfg.Peers[0] = peer
-	}
-	client, err := wgctrl.New()
-	if err != nil {
-		return err
-	}
-	defer client.Close()
-	return client.ConfigureDevice(l.InterfaceName, cfg)
-}
-
-func configureWGSetconf(l core.WireGuardLinkCfg) error {
-	conf := fmt.Sprintf("[Interface]\nPrivateKey = %s\n", l.NodePrivateKey)
-	if !l.IsInitiator && l.ListenPort > 0 {
-		conf += fmt.Sprintf("ListenPort = %d\n", l.ListenPort)
-	}
-	conf += fmt.Sprintf("\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\n", l.PeerPublicKey, l.PeerOverlayIP)
-	if l.IsInitiator {
-		if l.PeerEndpoint == "" {
-			return fmt.Errorf("initiator link %s missing peer endpoint", l.LinkID)
-		}
-		conf += fmt.Sprintf("Endpoint = %s\n", l.PeerEndpoint)
-		ka := l.PersistentKeepalive
-		if ka == 0 {
-			ka = 25
-		}
-		conf += fmt.Sprintf("PersistentKeepalive = %d\n", ka)
-	}
-	tmp := filepath.Join(os.TempDir(), l.InterfaceName+".conf")
-	if err := os.WriteFile(tmp, []byte(conf), 0o600); err != nil {
-		return err
-	}
-	return run("wg", "setconf", l.InterfaceName, tmp)
 }
 
 func run(name string, args ...string) error {
@@ -310,7 +217,6 @@ func (c *Client) Call(req Request) (*Response, error) {
 	}
 	conn, err := net.Dial(network, addr)
 	if err != nil {
-		// windows fallback
 		conn, err = net.Dial("tcp", "127.0.0.1:18765")
 		if err != nil {
 			return nil, err

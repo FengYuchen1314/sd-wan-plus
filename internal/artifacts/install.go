@@ -71,13 +71,11 @@ fetch pathweaver-controller "$INSTALL_DIR/bin/pathweaver-controller" 1
 # 缓存 install 脚本供本节点继续做父节点；链式首装不再 exec 它（避免旧脚本自拷贝退出）
 fetch install-node.sh       "$INSTALL_DIR/artifacts/install-node.sh" 1
 
-echo "[deps] 确保内核 WireGuard 可用（密钥由 pathweaver-cli 内置生成，不强制 wireguard-tools）..."
+echo "[deps] 安装基础依赖（数据面为内置 wireguard-go，无需内核 WG / wireguard-tools）..."
 export DEBIAN_FRONTEND=noninteractive
 if command -v apt-get >/dev/null 2>&1; then
   apt-get update -y >/dev/null 2>&1 || true
   apt-get install -y iproute2 python3 curl ca-certificates >/dev/null 2>&1 || true
-  # 可选：便于手工 wg show 排查；netd 已内置 wgctrl，不依赖此包
-  apt-get install -y wireguard-tools >/dev/null 2>&1 || true
 fi
 if ! command -v python3 >/dev/null 2>&1; then
   echo "未找到 python3。" >&2

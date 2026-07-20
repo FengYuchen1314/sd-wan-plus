@@ -197,7 +197,7 @@ done
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -y
-apt-get install -y curl ca-certificates wireguard-tools nftables iproute2 sqlite3 python3
+apt-get install -y curl ca-certificates nftables iproute2 sqlite3 python3
 
 install_common_files() {
   mkdir -p "$INSTALL_DIR"/{bin,web,data,artifacts,releases}
@@ -461,13 +461,10 @@ install_node() {
 
   mapfile -t _kp < <("$INSTALL_DIR/bin/pathweaver-cli" wg-keypair 2>/dev/null || true)
   if [[ ${#_kp[@]} -lt 2 ]]; then
-    # 兼容旧包：回退系统 wg
-    WG_PRIV=$(wg genkey 2>/dev/null) || { echo "需要 pathweaver-cli wg-keypair 或 wireguard-tools"; exit 1; }
-    WG_PUB=$(printf '%s' "$WG_PRIV" | wg pubkey) || { echo "wg pubkey 失败"; exit 1; }
-  else
-    WG_PRIV=${_kp[0]}
-    WG_PUB=${_kp[1]}
+    echo "需要 pathweaver-cli wg-keypair（数据面为 wireguard-go，不再依赖系统 wg）"; exit 1
   fi
+  WG_PRIV=${_kp[0]}
+  WG_PUB=${_kp[1]}
   [[ -n "$WG_PUB" && "$WG_PUB" != "$WG_PRIV" ]] || { echo "无效 WG 密钥对"; exit 1; }
   umask 077; echo "$WG_PRIV" > "$INSTALL_DIR/data/wg_private.key"
   RESP=$(

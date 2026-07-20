@@ -112,7 +112,9 @@ sudo ufw allow 14303:14399/udp
 
 ## WireGuard
 
-见 [docs/WIREGUARD.md](docs/WIREGUARD.md)：主动端单向发起握手 + Keepalive；被动端无固定 Endpoint，由内核动态学习维护。
+数据面使用嵌入 **pathweaver-netd** 的 **wireguard-go**（userspace），由主控编译 desired state 动态调控各节点链路；不依赖内核 WG 模块。
+
+握手语义见 [docs/WIREGUARD.md](docs/WIREGUARD.md)：主动端单向发起 + Keepalive；被动端 ListenPort，由协议动态学习对端。
 
 ## 环境要求
 
