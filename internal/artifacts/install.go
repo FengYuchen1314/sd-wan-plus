@@ -70,6 +70,11 @@ fetch pathweaver-cli        "$INSTALL_DIR/bin/pathweaver-cli" 1
 fetch pathweaver-controller "$INSTALL_DIR/bin/pathweaver-controller" 1
 # 缓存 install 脚本供本节点继续做父节点；链式首装不再 exec 它（避免旧脚本自拷贝退出）
 fetch install-node.sh       "$INSTALL_DIR/artifacts/install-node.sh" 1
+fetch uninstall.sh          "$INSTALL_DIR/uninstall.sh" 1
+if [[ -f "$INSTALL_DIR/uninstall.sh" ]]; then
+  chmod +x "$INSTALL_DIR/uninstall.sh" || true
+  cp -f "$INSTALL_DIR/uninstall.sh" "$INSTALL_DIR/artifacts/uninstall.sh" 2>/dev/null || true
+fi
 
 echo "[deps] 安装基础依赖（数据面为内置 wireguard-go，无需内核 WG / wireguard-tools）..."
 export DEBIAN_FRONTEND=noninteractive

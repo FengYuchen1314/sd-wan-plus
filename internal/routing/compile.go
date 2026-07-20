@@ -14,9 +14,8 @@ import (
 )
 
 // Compile builds per-node DesiredState from the WireGuard graph.
-// Overlay reachability: shortest-path next-hop over enabled links (AllowedIPs + host routes),
-// then preferred overlay paths override next-hops for specific pairs.
-// Does not create new WireGuard links.
+// Overlay reachability follows the enrollment control tree (parent/child backbone):
+// AllowedIPs + host routes via ControlNextHop. Does not create links or use mesh shortcuts.
 func Compile(db *storage.DB, generation uint64, box interface {
 	Decrypt(string) (string, error)
 }) (map[string]*core.NodeDesiredState, error) {
@@ -121,12 +120,12 @@ func Compile(db *storage.DB, generation uint64, box interface {
 			st.WireGuardLinks = append(st.WireGuardLinks, cfg)
 		}
 
-		// Overlay multi-hop: every reachable remote overlay IP via shortest-path next hop.
+		// Overlay multi-hop along control-tree backbone only.
 		for _, m := range g.Nodes {
 			if m.ID == n.ID || m.OverlayIPv4 == "" {
 				continue
 			}
-			hop, ok := topology.NextHop(g.Links, n.ID, m.ID)
+			hop, ok := topology.ControlNextHop(g.Nodes, g.Links, n.ID, m.ID)
 			if !ok {
 				continue
 			}
@@ -139,146 +138,16 @@ func Compile(db *storage.DB, generation uint64, box interface {
 			st.RouteTables = appendOverlayRoute(st.RouteTables, cidr, hop.Iface, n.OverlayIPv4)
 		}
 
-		out[n.ID] = st
-	}
-
-	if err := applyPreferredOverlayPaths(db, g.Links, nodeByID, out); err != nil {
-		return nil, err
-	}
-
-	for _, st := range out {
 		for i := range st.WireGuardLinks {
 			sort.Strings(st.WireGuardLinks[i].AllowedIPs)
 		}
 		if err := st.Seal(); err != nil {
 			return nil, err
 		}
+		out[n.ID] = st
 	}
 	return out, nil
 }
-
-const overlayPathDesc = "overlay-path"
-
-func applyPreferredOverlayPaths(db *storage.DB, links []core.WireGuardLink, nodeByID map[string]core.Node, out map[string]*core.NodeDesiredState) error {
-	policies, err := db.ListPolicies()
-	if err != nil {
-		return err
-	}
-	for _, p := range policies {
-		if !p.Enabled || p.Description != overlayPathDesc {
-			continue
-		}
-		hopsRows, err := db.ListPolicyHops(p.ID)
-		if err != nil || len(hopsRows) < 2 {
-			continue
-		}
-		hops := make([]string, len(hopsRows))
-		for i, h := range hopsRows {
-			hops[i] = h.NodeID
-		}
-		if err := topology.ValidatePath(links, hops); err != nil {
-			return fmt.Errorf("overlay path %s: %w", p.ID, err)
-		}
-		src, dst := hops[0], hops[len(hops)-1]
-		srcNode, okS := nodeByID[src]
-		dstNode, okD := nodeByID[dst]
-		if !okS || !okD || srcNode.OverlayIPv4 == "" || dstNode.OverlayIPv4 == "" {
-			continue
-		}
-		srcCIDR := ensureHostCIDR(srcNode.OverlayIPv4)
-		dstCIDR := ensureHostCIDR(dstNode.OverlayIPv4)
-		// Forward: each hop routes dstCIDR via next hop on path.
-		for i := 0; i < len(hops)-1; i++ {
-			if err := overrideOverlayNextHop(out[hops[i]], links, hops[i], hops[i+1], dstCIDR); err != nil {
-				return fmt.Errorf("overlay path %s forward: %w", p.ID, err)
-			}
-		}
-		// Reverse: each hop routes srcCIDR via previous hop on path.
-		for i := len(hops) - 1; i > 0; i-- {
-			if err := overrideOverlayNextHop(out[hops[i]], links, hops[i], hops[i-1], srcCIDR); err != nil {
-				return fmt.Errorf("overlay path %s reverse: %w", p.ID, err)
-			}
-		}
-	}
-	return nil
-}
-
-func overrideOverlayNextHop(st *core.NodeDesiredState, links []core.WireGuardLink, from, next, destCIDR string) error {
-	if st == nil || destCIDR == "" {
-		return nil
-	}
-	iface, linkID, ok := topology.LinkToward(links, from, next)
-	if !ok {
-		return fmt.Errorf("no enabled link %s→%s", from, next)
-	}
-	removeCIDRFromState(st, destCIDR)
-	idx := -1
-	for i := range st.WireGuardLinks {
-		if st.WireGuardLinks[i].LinkID == linkID {
-			idx = i
-			break
-		}
-	}
-	if idx < 0 {
-		return fmt.Errorf("link %s missing on node %s desired state", linkID, from)
-	}
-	st.WireGuardLinks[idx].AllowedIPs = appendUniqueCIDR(st.WireGuardLinks[idx].AllowedIPs, destCIDR)
-	st.RouteTables = setOverlayRoute(st.RouteTables, destCIDR, iface)
-	return nil
-}
-
-func removeCIDRFromState(st *core.NodeDesiredState, cidr string) {
-	for i := range st.WireGuardLinks {
-		st.WireGuardLinks[i].AllowedIPs = filterCIDR(st.WireGuardLinks[i].AllowedIPs, cidr)
-	}
-	for i := range st.RouteTables {
-		routes := st.RouteTables[i].Routes[:0]
-		for _, r := range st.RouteTables[i].Routes {
-			if r.Destination != cidr {
-				routes = append(routes, r)
-			}
-		}
-		st.RouteTables[i].Routes = routes
-	}
-}
-
-func filterCIDR(list []string, cidr string) []string {
-	out := list[:0]
-	for _, x := range list {
-		if x != cidr {
-			out = append(out, x)
-		}
-	}
-	return out
-}
-
-// setOverlayRoute replaces any existing route to dest with one via iface (main table).
-func setOverlayRoute(tables []core.RouteTableCfg, dest, iface string) []core.RouteTableCfg {
-	const mainTable = 0
-	rt := core.RouteCfg{Destination: dest, Dev: iface}
-	for i := range tables {
-		if tables[i].TableID != mainTable {
-			continue
-		}
-		found := false
-		for j := range tables[i].Routes {
-			if tables[i].Routes[j].Destination == dest {
-				tables[i].Routes[j] = rt
-				found = true
-				break
-			}
-		}
-		if !found {
-			tables[i].Routes = append(tables[i].Routes, rt)
-		}
-		return tables
-	}
-	return append(tables, core.RouteTableCfg{
-		TableID: mainTable,
-		Routes:  []core.RouteCfg{rt},
-	})
-}
-
 
 func ensureHostCIDR(ip string) string {
 	ip = strings.TrimSpace(ip)
@@ -303,8 +172,7 @@ func appendUniqueCIDR(list []string, cidr string) []string {
 	return append(list, cidr)
 }
 
-// appendOverlayRoute stores host routes in table 0 (main) as a single RouteTableCfg with TableID 254
-// is awkward; use TableID 0 to mean main table for netd.
+// appendOverlayRoute stores host routes in table 0 (main) for netd.
 func appendOverlayRoute(tables []core.RouteTableCfg, dest, iface, src string) []core.RouteTableCfg {
 	const mainTable = 0
 	rt := core.RouteCfg{Destination: dest, Dev: iface}

@@ -95,7 +95,7 @@ func EnabledAdj(links []core.WireGuardLink) map[string][]Neighbor {
 	return adj
 }
 
-// NextHopResult is the first hop from src toward dst on the WG graph.
+// NextHopResult is the first hop from src toward dst.
 type NextHopResult struct {
 	PeerID string
 	Iface  string
@@ -103,6 +103,7 @@ type NextHopResult struct {
 }
 
 // NextHop returns the BFS shortest-path next hop from src to dst over enabled links.
+// Prefer ControlNextHop for overlay routing along the enrollment backbone.
 func NextHop(links []core.WireGuardLink, src, dst string) (NextHopResult, bool) {
 	if src == "" || dst == "" || src == dst {
 		return NextHopResult{}, false
@@ -139,48 +140,75 @@ func NextHop(links []core.WireGuardLink, src, dst string) (NextHopResult, bool) 
 	return NextHopResult{}, false
 }
 
-// SimplePaths enumerates simple (acyclic) paths from src to dst over enabled WG links.
-func SimplePaths(links []core.WireGuardLink, src, dst string, maxHops, maxPaths int) [][]string {
+// ControlNextHop returns the first hop from src toward dst along the control tree
+// (ControlParentID). Adjacent tree hops must have an enabled WireGuard link.
+func ControlNextHop(nodes []core.Node, links []core.WireGuardLink, src, dst string) (NextHopResult, bool) {
 	if src == "" || dst == "" || src == dst {
-		return nil
+		return NextHopResult{}, false
 	}
-	if maxHops <= 0 {
-		maxHops = 8
+	parentOf := map[string]string{}
+	for _, n := range nodes {
+		if n.ControlParentID != nil && *n.ControlParentID != "" {
+			parentOf[n.ID] = *n.ControlParentID
+		}
 	}
-	if maxPaths <= 0 {
-		maxPaths = 64
+	path, ok := controlTreePath(parentOf, src, dst)
+	if !ok || len(path) < 2 {
+		return NextHopResult{}, false
 	}
-	adj := EnabledAdj(links)
-	var out [][]string
-	var walk func(cur string, path []string, seen map[string]bool)
-	walk = func(cur string, path []string, seen map[string]bool) {
-		if len(out) >= maxPaths {
-			return
+	// Validate every tree edge has an enabled WG link.
+	for i := 0; i < len(path)-1; i++ {
+		if !HasDirectLink(links, path[i], path[i+1]) {
+			return NextHopResult{}, false
 		}
-		if cur == dst {
-			cp := make([]string, len(path))
-			copy(cp, path)
-			out = append(out, cp)
-			return
+	}
+	iface, linkID, ok := LinkToward(links, src, path[1])
+	if !ok {
+		return NextHopResult{}, false
+	}
+	return NextHopResult{PeerID: path[1], Iface: iface, LinkID: linkID}, true
+}
+
+// controlTreePath returns node IDs from src to dst via their LCA on the parent tree.
+func controlTreePath(parentOf map[string]string, src, dst string) ([]string, bool) {
+	ancestors := map[string]int{} // node -> depth from src (0 = src)
+	up := []string{src}
+	cur := src
+	for i := 0; ; i++ {
+		ancestors[cur] = i
+		p, ok := parentOf[cur]
+		if !ok {
+			break
 		}
-		if len(path)-1 >= maxHops {
-			return
+		up = append(up, p)
+		cur = p
+		if i > 1024 {
+			return nil, false
 		}
-		for _, n := range adj[cur] {
-			if seen[n.NodeID] {
-				continue
+	}
+	down := []string{}
+	cur = dst
+	for i := 0; ; i++ {
+		if _, hit := ancestors[cur]; hit {
+			// path: src..LCA + reverse(down without LCA)
+			lcaIdx := ancestors[cur]
+			path := make([]string, 0, lcaIdx+1+len(down))
+			path = append(path, up[:lcaIdx+1]...)
+			for j := len(down) - 1; j >= 0; j-- {
+				path = append(path, down[j])
 			}
-			seen[n.NodeID] = true
-			walk(n.NodeID, append(path, n.NodeID), seen)
-			delete(seen, n.NodeID)
-			if len(out) >= maxPaths {
-				return
-			}
+			return path, true
+		}
+		down = append(down, cur)
+		p, ok := parentOf[cur]
+		if !ok {
+			return nil, false
+		}
+		cur = p
+		if i > 1024 {
+			return nil, false
 		}
 	}
-	seen := map[string]bool{src: true}
-	walk(src, []string{src}, seen)
-	return out
 }
 
 // LinkToward returns local iface and link id from node `from` toward neighbor `to`.

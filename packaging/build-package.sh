@@ -34,6 +34,11 @@ cp packaging/systemd/*.service "$STAGE/packaging/systemd/" 2>/dev/null || true
 
 # Convenience copies for artifact cache naming
 cp "$STAGE/install.sh" "$STAGE/bin/install-node.sh"
+mkdir -p "$STAGE/scripts"
+cp scripts/uninstall.sh "$STAGE/scripts/uninstall.sh"
+cp scripts/uninstall.sh "$STAGE/uninstall.sh"
+cp scripts/uninstall.sh "$STAGE/bin/uninstall.sh"
+chmod +x "$STAGE/scripts/uninstall.sh" "$STAGE/uninstall.sh" "$STAGE/bin/uninstall.sh"
 
 mkdir -p "$OUT_DIR"
 TAR="$OUT_DIR/${PKG_NAME}.tar.gz"

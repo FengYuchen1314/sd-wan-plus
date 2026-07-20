@@ -1,14 +1,12 @@
 #!/bin/bash
-set -e
-echo "PathWeaver 节点卸载"
-read -p "确认卸载？[y/N] " -r
-[[ "$REPLY" =~ ^[Yy]$ ]] || exit 0
-systemctl stop pathweaver-agent pathweaver-netd pathweaver-updater 2>/dev/null || true
-systemctl disable pathweaver-agent pathweaver-netd pathweaver-updater 2>/dev/null || true
-rm -f /etc/systemd/system/pathweaver*.service
-systemctl daemon-reload
-rm -rf /opt/pathweaver
-for iface in $(ip link show 2>/dev/null | grep -oE 'pwl-[^:]+|pw-lo' | sort -u); do
-  ip link delete "$iface" 2>/dev/null || true
-done
-echo "完成"
+# 兼容入口：转发到本机已安装的卸载脚本（不联网）
+set -euo pipefail
+DIR=/opt/pathweaver
+if [[ -f "$DIR/uninstall.sh" ]]; then
+  exec bash "$DIR/uninstall.sh" "$@"
+fi
+if [[ -f "$(dirname "$0")/../scripts/uninstall.sh" ]]; then
+  exec bash "$(dirname "$0")/../scripts/uninstall.sh" "$@"
+fi
+echo "未找到 $DIR/uninstall.sh，请用仓库内 scripts/uninstall.sh 在本机执行（无需联网）。" >&2
+exit 1

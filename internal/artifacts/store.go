@@ -18,13 +18,15 @@ var NodeBinaries = []string{
 	"pathweaver-cli",
 	"pathweaver-controller",
 	"install-node.sh",
+	"uninstall.sh",
 }
 
 // OptionalArtifacts may be absent; prefetch should not fail the whole job.
 var OptionalArtifacts = map[string]bool{
-	"manifest.json":     true,
-	"install-node.sh":   true,
-	"pathweaver-cli":    true,
+	"manifest.json":         true,
+	"install-node.sh":       true,
+	"uninstall.sh":          true,
+	"pathweaver-cli":        true,
 	"pathweaver-controller": true,
 }
 

@@ -17,9 +17,19 @@ tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
 1. 在「节点」页点 **删除** → 先展示影响（相邻链路数、控制树下级）。
 2. **控制机不可删**；仍有控制树下级时拒绝，需先删下级。
 3. 确认后从控制面移除该节点与相邻 WG 链路，并 **自动发布** 新配置。
-4. 再到该设备执行本机卸载（`scripts/uninstall.sh`）；需要清数据时加 `--purge` / `--yes`。
+4. 再到该设备执行本机卸载（不联网）：`sudo bash /opt/pathweaver/uninstall.sh`（可加 `--yes`）。
 
 ## 完全卸载
+
+不联网（推荐）:
+
+```bash
+sudo bash /opt/pathweaver/uninstall.sh
+# 或
+sudo bash /opt/pathweaver/uninstall.sh --yes
+```
+
+有网备用（仅本机缺少 uninstall.sh 时）:
 
 ```bash
 tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \

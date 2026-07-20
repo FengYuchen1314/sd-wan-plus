@@ -36,20 +36,24 @@ tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
 
 ## 完全卸载（换机前）
 
-一键清除服务、数据目录、`pw-lo` / `pwl-*` 接口：
+**不联网**（安装时已写入本机，推荐）:
+
+```bash
+sudo bash /opt/pathweaver/uninstall.sh
+```
+
+非交互：
+
+```bash
+sudo bash /opt/pathweaver/uninstall.sh --yes
+```
+
+有网时也可从仓库拉取（仅当本机没有 `uninstall.sh` 时才需要）:
 
 ```bash
 tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
   "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/uninstall.sh?$(date +%s)" \
   -o "$tmp" && sudo bash "$tmp"; rm -f "$tmp"
-```
-
-非交互（不询问确认）：
-
-```bash
-tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
-  "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/uninstall.sh?$(date +%s)" \
-  -o "$tmp" && sudo bash "$tmp" -- --yes; rm -f "$tmp"
 ```
 
 ## 子节点接入（链式）

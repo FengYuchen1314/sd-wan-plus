@@ -1,12 +1,12 @@
 #!/bin/bash
-# PathWeaver 完全卸载（控制机 / 子节点通用）
-# 一键用法:
-#   tmp=$(mktemp) && curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
-#     "https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/uninstall.sh?$(date +%s)" \
-#     -o "$tmp" && sudo bash "$tmp"; rm -f "$tmp"
+# PathWeaver 完全卸载（控制机 / 子节点通用）— 纯本机，不联网
 #
-# 非交互:
-#   ... | sudo bash -s -- --yes
+# 离线（推荐，安装时已写入本机）:
+#   sudo bash /opt/pathweaver/uninstall.sh
+#   sudo bash /opt/pathweaver/uninstall.sh --yes
+#
+# 有网时也可从仓库拉取（非必需）:
+#   curl -fsSL .../scripts/uninstall.sh | sudo bash -s -- --yes
 set -euo pipefail
 
 YES=0
@@ -18,6 +18,7 @@ while [[ $# -gt 0 ]]; do
     --install-dir) INSTALL_DIR="$2"; shift 2 ;;
     -h|--help)
       echo "用法: sudo bash uninstall.sh [--yes] [--install-dir DIR]"
+      echo "默认安装目录: /opt/pathweaver（纯本机操作，不访问网络）"
       exit 0
       ;;
     *) echo "未知参数: $1"; exit 1 ;;
@@ -29,12 +30,38 @@ if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   exit 1
 fi
 
+# 若脚本位于安装目录内，先拷到 /tmp 再执行，避免删目录时踩掉自身
+SCRIPT_SRC=${BASH_SOURCE[0]:-$0}
+SCRIPT_PATH=$(readlink -f "$SCRIPT_SRC" 2>/dev/null || realpath "$SCRIPT_SRC" 2>/dev/null || echo "$SCRIPT_SRC")
+case "$SCRIPT_PATH" in
+  "$INSTALL_DIR"|"$INSTALL_DIR"/*)
+    if [[ "${PW_UNINSTALL_REEXEC:-}" != "1" ]]; then
+      tmp=$(mktemp /tmp/pathweaver-uninstall.XXXXXX)
+      cp -f "$SCRIPT_PATH" "$tmp"
+      chmod 700 "$tmp"
+      args=()
+      [[ "$YES" == "1" ]] && args+=(--yes)
+      args+=(--install-dir "$INSTALL_DIR")
+      export PW_UNINSTALL_REEXEC=1
+      exec bash "$tmp" "${args[@]}"
+    fi
+    ;;
+esac
+cleanup_tmp() {
+  if [[ "${PW_UNINSTALL_REEXEC:-}" == "1" && -n "${BASH_SOURCE[0]:-}" ]]; then
+    case "${BASH_SOURCE[0]}" in
+      /tmp/pathweaver-uninstall.*) rm -f "${BASH_SOURCE[0]}" 2>/dev/null || true ;;
+    esac
+  fi
+}
+trap cleanup_tmp EXIT
+
 if [[ ! -t 0 ]] && [[ -r /dev/tty ]]; then
   exec </dev/tty
 fi
 
 echo "============================================"
-echo "  PathWeaver 完全卸载"
+echo "  PathWeaver 完全卸载（离线）"
 echo "============================================"
 echo "将停止并删除："
 echo "  - systemd: pathweaver pathweaver-agent pathweaver-netd pathweaver-updater"

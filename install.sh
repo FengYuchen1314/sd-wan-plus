@@ -209,6 +209,13 @@ install_common_files() {
       cp -a "$PKG_ROOT/web/." "$INSTALL_DIR/web/"
     fi
     cp -f "$PKG_ROOT/install.sh" "$INSTALL_DIR/artifacts/install-node.sh" 2>/dev/null || true
+    if [[ -f "$PKG_ROOT/scripts/uninstall.sh" ]]; then
+      cp -f "$PKG_ROOT/scripts/uninstall.sh" "$INSTALL_DIR/uninstall.sh" 2>/dev/null || true
+      cp -f "$PKG_ROOT/scripts/uninstall.sh" "$INSTALL_DIR/artifacts/uninstall.sh" 2>/dev/null || true
+    elif [[ -f "$PKG_ROOT/uninstall.sh" ]]; then
+      cp -f "$PKG_ROOT/uninstall.sh" "$INSTALL_DIR/uninstall.sh" 2>/dev/null || true
+      cp -f "$PKG_ROOT/uninstall.sh" "$INSTALL_DIR/artifacts/uninstall.sh" 2>/dev/null || true
+    fi
   fi
   chmod +x "$INSTALL_DIR/bin/"* 2>/dev/null || true
   # 制品缓存：便于作为父节点向下游分发
@@ -217,6 +224,18 @@ install_common_files() {
     chmod +x "$INSTALL_DIR/artifacts/install-node.sh" || true
   elif [[ -f "$PKG_ROOT/install.sh" ]]; then
     cp -f "$PKG_ROOT/install.sh" "$INSTALL_DIR/artifacts/install-node.sh" || true
+  fi
+  # 确保本机有离线卸载脚本
+  if [[ ! -f "$INSTALL_DIR/uninstall.sh" ]]; then
+    if [[ -f "$PKG_ROOT/scripts/uninstall.sh" ]]; then
+      cp -f "$PKG_ROOT/scripts/uninstall.sh" "$INSTALL_DIR/uninstall.sh" || true
+    elif [[ -f "$INSTALL_DIR/artifacts/uninstall.sh" ]]; then
+      cp -f "$INSTALL_DIR/artifacts/uninstall.sh" "$INSTALL_DIR/uninstall.sh" || true
+    fi
+  fi
+  if [[ -f "$INSTALL_DIR/uninstall.sh" ]]; then
+    chmod +x "$INSTALL_DIR/uninstall.sh" || true
+    cp -f "$INSTALL_DIR/uninstall.sh" "$INSTALL_DIR/artifacts/uninstall.sh" 2>/dev/null || true
   fi
 }
 
@@ -461,6 +480,13 @@ install_node() {
   # 统一安装脚本也缓存，便于继续作为下一级父节点
   curl -fsSL "$PARENT_URL/bootstrap/artifact/install-node.sh" -o "$INSTALL_DIR/artifacts/install-node.sh" 2>/dev/null || \
     cp -f "$PKG_ROOT/install.sh" "$INSTALL_DIR/artifacts/install-node.sh" || true
+  curl -fsSL "$PARENT_URL/bootstrap/artifact/uninstall.sh" -o "$INSTALL_DIR/uninstall.sh" 2>/dev/null || \
+    { [[ -f "$PKG_ROOT/scripts/uninstall.sh" ]] && cp -f "$PKG_ROOT/scripts/uninstall.sh" "$INSTALL_DIR/uninstall.sh"; } || \
+    { [[ -f "$PKG_ROOT/uninstall.sh" ]] && cp -f "$PKG_ROOT/uninstall.sh" "$INSTALL_DIR/uninstall.sh"; } || true
+  if [[ -f "$INSTALL_DIR/uninstall.sh" ]]; then
+    chmod +x "$INSTALL_DIR/uninstall.sh" || true
+    cp -f "$INSTALL_DIR/uninstall.sh" "$INSTALL_DIR/artifacts/uninstall.sh" 2>/dev/null || true
+  fi
 
   mapfile -t _kp < <("$INSTALL_DIR/bin/pathweaver-cli" wg-keypair 2>/dev/null || true)
   if [[ ${#_kp[@]} -lt 2 ]]; then
