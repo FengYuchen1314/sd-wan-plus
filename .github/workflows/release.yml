@@ -55,7 +55,7 @@ jobs:
           FORCE_WEB_BUILD: "0"
         run: |
           chmod +x packaging/build-package.sh
-          VERSION="$(date -u +%Y.%m.%d)"
+          VERSION="$(date -u +%Y.%m.%d-%H%M)"
           echo "VERSION=${VERSION}"
           VERSION="$VERSION" packaging/build-package.sh
           # Stable names for one-click install (do not change between commits)
@@ -92,7 +92,7 @@ jobs:
           tag_name: latest
           name: PathWeaver latest
           body: |
-            统一安装包（主控与子节点同一包，`--role` 区分）。版本号为构建日 UTC：`YYYY.MM.DD`。
+            统一安装包（主控与子节点同一包，`--role` 区分）。版本号为构建时刻 UTC：`YYYY.MM.DD-HHMM`。
 
             ### 控制机
             ```bash

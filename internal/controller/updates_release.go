@@ -143,8 +143,8 @@ func (s *Server) fetchGitHubLatestUncached() (*latestReleaseInfo, error) {
 	stable := fmt.Sprintf("pathweaver-linux-%s.tar.gz", goarch)
 	var downloadURL, assetName string
 	version := ""
-	// Prefer date versions: pathweaver-2026.07.20-linux-amd64.tar.gz
-	verRe := regexp.MustCompile(`pathweaver-(\d{4}\.\d{2}\.\d{2}(?:-[0-9a-f]+)?)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
+	// Date+time versions: pathweaver-2026.07.20-1511-linux-amd64.tar.gz (same-day builds distinguishable)
+	verRe := regexp.MustCompile(`pathweaver-(\d{4}\.\d{2}\.\d{2}(?:-\d{4})?)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
 	legacyVerRe := regexp.MustCompile(`pathweaver-(.+)-linux-` + regexp.QuoteMeta(goarch) + `\.tar\.gz`)
 	commit := ""
 	if m := regexp.MustCompile(`(?i)Commit:\s*([0-9a-f]{7,40})`).FindStringSubmatch(rel.Body); len(m) == 2 {
@@ -156,10 +156,12 @@ func (s *Server) fetchGitHubLatestUncached() (*latestReleaseInfo, error) {
 			assetName = a.Name
 		}
 		if m := verRe.FindStringSubmatch(a.Name); len(m) == 2 {
-			version = m[1]
-			if downloadURL == "" {
-				downloadURL = a.BrowserDownloadURL
-				assetName = a.Name
+			if m[1] > version {
+				version = m[1]
+				if downloadURL == "" {
+					downloadURL = a.BrowserDownloadURL
+					assetName = a.Name
+				}
 			}
 		}
 	}
@@ -178,12 +180,8 @@ func (s *Server) fetchGitHubLatestUncached() (*latestReleaseInfo, error) {
 	if downloadURL == "" {
 		return nil, fmt.Errorf("release 中未找到 linux-%s 安装包", goarch)
 	}
-	// Default version name: YYYY.MM.DD from publish time
-	if version == "" && rel.PublishedAt != "" && len(rel.PublishedAt) >= 10 {
-		version = strings.ReplaceAll(rel.PublishedAt[:10], "-", ".")
-	}
 	if version == "" {
-		version = time.Now().UTC().Format("2006.01.02")
+		version = time.Now().UTC().Format("2006.01.02-1504")
 	}
 
 	cur := core.ProductVersion
