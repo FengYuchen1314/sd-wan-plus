@@ -8,10 +8,8 @@ err()  { echo -e "${RED}[ERROR]${NC} $1"; }
 
 [ "$(id -u)" -ne 0 ] && { err "请用 root 运行: sudo bash install.sh"; exit 1; }
 
-# ─── 端口检测 (仅 ss) ───
 port_free() {
-    local port=$1
-    ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE ":$(echo $port)$" && return 1
+    ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE ":${1}$" && return 1
     return 0
 }
 find_port() {
@@ -30,7 +28,7 @@ find_range() {
         [ $((p + n)) -gt 65535 ] && p=1024
         local ok=1
         for ((j=0; j<n; j++)); do
-            port_free $((p + j)) udp 2>/dev/null || { ok=0; break; }
+            port_free $((p + j)) 2>/dev/null || { ok=0; break; }
         done
         [ $ok -eq 1 ] && { echo $p; return 0; }
         p=$((p + 20))
@@ -40,10 +38,8 @@ find_range() {
 
 log "PathWeaver SD-WAN 控制机安装"
 
-# IP 检测
 PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me 2>/dev/null || curl -s --max-time 5 icanhazip.com 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
 
-# 端口
 WEB_PORT=$(find_port 8443) || { err "无可用 TCP 端口"; exit 1; }
 WG_START=$(find_range 30000 50) || WG_START=$(find_range 20000 50)
 [ -z "$WG_START" ] && { err "无可用连续 UDP 端口"; exit 1; }
@@ -54,51 +50,44 @@ echo -e "${CYAN}═════════════════════�
 echo -e "  公网地址:  ${GREEN}$PUBLIC_IP${NC}"
 echo -e "  Web 端口:  ${GREEN}$WEB_PORT${NC}"
 echo -e "  WG 端口池: ${GREEN}$WG_START-$((WG_START + 49))${NC}"
-echo -e "  密码:      ${GREEN}$PASS${NC}"
+echo -e "  管理员密码: ${GREEN}$PASS${NC}"
 echo -e "${CYAN}══════════════════════════════════${NC}"
 echo ""
 read -rp "确认继续? [Y/n] " yn; [ "$yn" = "n" ] && exit 0
 
-# 安装依赖
-log "安装依赖..."
+log "安装系统依赖..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv curl wireguard-tools nftables
 
-# 安装 PathWeaver
 INSTALL_DIR="/opt/pathweaver"
-mkdir -p "$INSTALL_DIR"
+mkdir -p "$INSTALL_DIR/deps_cache"
 
-# 下载 PathWeaver
-log "下载 PathWeaver server..."
+log "下载 PathWeaver..."
 REPO="https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master"
-mkdir -p "$INSTALL_DIR"/deps_cache
 curl -fsSL "$REPO/server/main.py" -o "$INSTALL_DIR/main.py"
 curl -fsSL "$REPO/server/requirements.txt" -o "$INSTALL_DIR/requirements.txt"
 
-# 预下载 Python 依赖 (缓存到本地, 供子节点链式下载)
-log "缓存 Python 依赖 (子节点将从此处下载)..."
+log "安装 Python 环境..."
 cd "$INSTALL_DIR"
 python3 -m venv .venv
 source .venv/bin/activate
-# 先在线装好自己用的
 pip install -r requirements.txt -q
-# 再预下载 wheel 包到缓存目录
-mkdir -p "$INSTALL_DIR/deps_cache"
+
+log "缓存 Python 依赖 (子节点将从此处链式下载)..."
 pip download -d "$INSTALL_DIR/deps_cache" --only-binary :all: \
     --platform manylinux2014_x86_64 --python-version 311 \
-    fastapi "uvicorn[standard]" bcrypt python-multipart 2>/dev/null || \
-pip download -d "$INSTALL_DIR/deps_cache" fastapi uvicorn bcrypt python-multipart 2>/dev/null || true
-log "依赖缓存完成: $(ls $INSTALL_DIR/deps_cache/ | wc -l) 个包"
+    fastapi "uvicorn[standard]" argon2-cffi cryptography python-multipart websockets 2>/dev/null || \
+pip download -d "$INSTALL_DIR/deps_cache" fastapi uvicorn argon2-cffi cryptography python-multipart websockets 2>/dev/null || true
+log "依赖缓存: $(find "$INSTALL_DIR/deps_cache" -name '*.whl' | wc -l) 个包"
 
-# 写配置
 cat > "$INSTALL_DIR/.env" << EOF
 PW_WEB_PORT=$WEB_PORT
 PW_WG_PORT_START=$WG_START
 PW_WG_PORT_END=$((WG_START + 49))
 PW_PUBLIC_ADDRESS=$PUBLIC_IP
+PW_INITIAL_ADMIN_PASSWORD=$PASS
 EOF
 
-# systemd (使用 .venv) 依赖已在上一步安装到 $INSTALL_DIR/.venv
 cat > /etc/systemd/system/pathweaver.service << EOF
 [Unit]
 Description=PathWeaver SD-WAN Controller
@@ -117,11 +106,11 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-# 防火墙
-for tool in ufw firewall-cmd nft iptables; do
+for tool in ufw nft iptables; do
     command -v $tool &>/dev/null || continue
     case $tool in
-        ufw) ufw allow $WEB_PORT/tcp comment 'PW' 2>/dev/null; ufw allow $WG_START:$((WG_START + 49))/udp 2>/dev/null;;
+        ufw) ufw allow $WEB_PORT/tcp comment 'PathWeaver' 2>/dev/null || true
+             ufw allow $WG_START:$((WG_START + 49))/udp comment 'PathWeaver WG' 2>/dev/null || true;;
         nft) nft add table inet pathweaver 2>/dev/null || true
              nft add chain inet pathweaver input '{ type filter hook input priority 0; }' 2>/dev/null || true
              nft add rule inet pathweaver input tcp dport $WEB_PORT accept 2>/dev/null || true
@@ -138,14 +127,15 @@ sleep 3
 if systemctl is-active --quiet pathweaver; then
     echo ""
     echo -e "${CYAN}════════════════════════════════════════${NC}"
-    echo -e "${GREEN}     PathWeaver 安装完成${NC}"
+    echo -e "${GREEN}          PathWeaver 安装完成${NC}"
     echo -e "${CYAN}════════════════════════════════════════${NC}"
     echo -e "  ${GREEN}面板: http://$PUBLIC_IP:$WEB_PORT${NC}"
-    echo -e "  密码: ${GREEN}$PASS${NC}"
+    echo -e "  用户名: ${GREEN}admin${NC}"
+    echo -e "  密码:   ${GREEN}$PASS${NC}"
     echo ""
     echo -e "  日志: journalctl -u pathweaver -f"
     echo -e "${CYAN}════════════════════════════════════════${NC}"
 else
-    err "启动失败: journalctl -u pathweaver -n 50"
+    err "启动失败，查看日志: journalctl -u pathweaver -n 50"
     exit 1
 fi

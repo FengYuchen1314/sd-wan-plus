@@ -1384,6 +1384,21 @@ def main():
             log.warning(f"Deps cache failed: {e}")
 
     db = get_db()
+
+    # Initial admin setup
+    admin_exists = db.execute("SELECT id FROM admin").fetchone()
+    if not admin_exists:
+        init_pass = os.getenv("PW_INITIAL_ADMIN_PASSWORD")
+        if not init_pass:
+            log.error("PW_INITIAL_ADMIN_PASSWORD not set — set this env var on first run to create the admin")
+            sys.exit(1)
+        pw_hash = hash_password(init_pass)
+        db.execute(
+            "INSERT INTO admin (id, username, password_hash, created_at, updated_at) VALUES (?,?,?,?,?)",
+            (uid(), "admin", pw_hash, now(), now()))
+        db.commit()
+        log.info("Admin user created (username: admin)")
+
     existing = db.execute("SELECT id FROM nodes WHERE is_controller=1").fetchone()
     if not existing:
         cid = uid()
