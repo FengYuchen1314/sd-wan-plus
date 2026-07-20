@@ -308,7 +308,8 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 			addr = s.cfg.PublicAddress
 		}
 	}
-	cmd := fmt.Sprintf(`curl -fsSL "http://%s:%d/bootstrap/install.sh?token=%s" | sudo bash`, addr, parent.NodeServicePort, tok)
+	// 先下载再执行，避免 curl|bash 时交互提示被进度条盖住、看起来像卡住
+	cmd := fmt.Sprintf(`tmp=$(mktemp) && curl -fsSL "http://%s:%d/bootstrap/install.sh?token=%s" -o "$tmp" && sudo bash "$tmp"; rm -f "$tmp"`, addr, parent.NodeServicePort, tok)
 	unified := fmt.Sprintf("sudo bash install.sh --role node --parent-url http://%s:%d --token %s --name %s", addr, parent.NodeServicePort, tok, body.SuggestedNodeName)
 	admin := adminFrom(r.Context())
 	_ = s.db.AddAudit(&admin.ID, "create_enrollment_token", "enrollment_token", &t.ID, body.SuggestedNodeName, clientIP(r))

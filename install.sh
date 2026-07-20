@@ -99,16 +99,10 @@ if [[ -z "$ROLE" ]]; then
   exit 1
 fi
 
-# curl|bash 时 stdin 是管道，交互 read 会立刻 EOF 退出；改从终端读入
+# curl|bash 时 stdin 是管道；绝不要 exec </dev/tty（会把后续脚本行变成键盘输入）。
+# 交互一律从 /dev/tty 读。
 ensure_tty() {
-  if [[ -t 0 ]]; then
-    return 0
-  fi
-  if [[ -r /dev/tty ]]; then
-    exec </dev/tty
-    return 0
-  fi
-  return 1
+  [[ -r /dev/tty && -w /dev/tty ]]
 }
 
 ask() {
@@ -117,11 +111,16 @@ ask() {
   local __var=$2
   local secret=${3:-0}
   local __val=""
+  if ! ensure_tty; then
+    echo "无可用终端，无法交互" >&2
+    return 1
+  fi
+  printf '%s' "$prompt" > /dev/tty
   if [[ "$secret" == "1" ]]; then
-    read -rsp "$prompt" __val
-    echo
+    read -rs __val < /dev/tty || true
+    printf '\n' > /dev/tty
   else
-    read -rp "$prompt" __val
+    read -r __val < /dev/tty || true
   fi
   printf -v "$__var" '%s' "$__val"
 }
