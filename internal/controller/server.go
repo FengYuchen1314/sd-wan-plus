@@ -43,7 +43,7 @@ func DefaultConfig() Config {
 	return Config{
 		WebPort: ports.Web, NodePort: ports.Node, WGPortStart: ports.WGStart, WGPortEnd: ports.WGEnd,
 		PublicAddress: "127.0.0.1", OverlayCIDR: "10.250.0.0/16",
-		DBPath: "./data/pathweaver.db", StaticDir: "", KeyFile: "./data/.pathweaver.key",
+		DBPath: "", StaticDir: "", KeyFile: "",
 		SessionHours: 48, MaxLoginAttempts: 5, LoginWindowSec: 300, DataDir: "./data",
 	}
 }

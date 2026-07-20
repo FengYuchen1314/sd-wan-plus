@@ -9,7 +9,7 @@
 #   ... | sudo bash -s -- --public-address 1.2.3.4 --password 'secret'
 set -euo pipefail
 
-SCRIPT_REV="2026-07-20c"
+SCRIPT_REV="2026-07-20d"
 echo "[pathweaver] install-controller.sh rev=${SCRIPT_REV}"
 
 REPO="${PW_REPO:-FengYuchen1314/sd-wan-plus}"
@@ -89,6 +89,12 @@ tar -xzf "$TMP/pathweaver.tar.gz" -C "$TMP"
 INSTALL_SH=$(find "$TMP" -maxdepth 3 -type f -name install.sh | head -n1)
 [[ -n "$INSTALL_SH" ]] || { echo "安装包内缺少 install.sh"; exit 1; }
 PKG_DIR=$(dirname "$INSTALL_SH")
+
+# 安装脚本走 master 最新版（修复可即时生效，不必等重建 Release）
+echo "  同步最新 install.sh ..."
+curl -fsSL -H 'Cache-Control: no-cache' -H 'Pragma: no-cache' \
+  "https://raw.githubusercontent.com/${REPO}/master/install.sh?$(date +%s)" \
+  -o "$PKG_DIR/install.sh" || echo "  警告: 无法同步 install.sh，将使用包内版本"
 
 echo "[4/4] 执行控制机安装（交互输入走 /dev/tty）..."
 ARGS=(--role controller --name "$CTRL_NAME")

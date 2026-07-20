@@ -44,17 +44,20 @@ func main() {
 	if v := os.Getenv("PW_PUBLIC_ADDRESS"); v != "" {
 		cfg.PublicAddress = v
 	}
+	if v := os.Getenv("PW_DATA_DIR"); v != "" {
+		cfg.DataDir = v
+	}
 	if v := os.Getenv("PW_DB_PATH"); v != "" {
 		cfg.DBPath = v
+	}
+	if v := os.Getenv("PW_KEY_FILE"); v != "" {
+		cfg.KeyFile = v
 	}
 	if v := os.Getenv("PW_STATIC_DIR"); v != "" {
 		cfg.StaticDir = v
 	}
 	if v := os.Getenv("PW_OVERLAY_CIDR"); v != "" {
 		cfg.OverlayCIDR = v
-	}
-	if v := os.Getenv("PW_DATA_DIR"); v != "" {
-		cfg.DataDir = v
 	}
 	if os.Getenv("PW_TLS") == "1" {
 		cfg.TLS = true

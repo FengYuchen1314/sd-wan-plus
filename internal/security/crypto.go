@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -91,6 +92,9 @@ type SecretBox struct {
 }
 
 func LoadOrCreateKey(path string) (*SecretBox, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, err
+	}
 	var key []byte
 	if data, err := os.ReadFile(path); err == nil && len(data) >= 32 {
 		key = data[:32]

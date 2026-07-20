@@ -190,6 +190,7 @@ install_controller() {
 
   export PW_DATA_DIR="$INSTALL_DIR/data"
   export PW_DB_PATH="$INSTALL_DIR/data/pathweaver.db"
+  export PW_KEY_FILE="$INSTALL_DIR/data/.pathweaver.key"
   export PW_WEB_PORT="$WEB_PORT"
   export PW_NODE_PORT="$NODE_PORT"
   export PW_WG_PORT_START="$WG_START"
@@ -198,6 +199,8 @@ install_controller() {
   export PW_OVERLAY_CIDR="$OVERLAY"
   export PW_STATIC_DIR="$INSTALL_DIR/web"
 
+  # bootstrap 必须在 INSTALL_DIR 下跑，避免相对路径写到解压临时目录
+  cd "$INSTALL_DIR"
   "$INSTALL_DIR/bin/pathweaver-controller" --bootstrap --password "$ADMIN_PASS" --name "$CTRL_NAME"
 
   write_unit pathweaver.service "[Unit]
@@ -209,6 +212,7 @@ Type=simple
 WorkingDirectory=$INSTALL_DIR
 Environment=PW_DATA_DIR=$INSTALL_DIR/data
 Environment=PW_DB_PATH=$INSTALL_DIR/data/pathweaver.db
+Environment=PW_KEY_FILE=$INSTALL_DIR/data/.pathweaver.key
 Environment=PW_WEB_PORT=$WEB_PORT
 Environment=PW_NODE_PORT=$NODE_PORT
 Environment=PW_WG_PORT_START=$WG_START
