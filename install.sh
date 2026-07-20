@@ -140,15 +140,23 @@ apt-get install -y curl ca-certificates wireguard-tools nftables iproute2 sqlite
 
 install_common_files() {
   mkdir -p "$INSTALL_DIR"/{bin,web,data,artifacts,releases}
-  cp -f "$PKG_ROOT/bin/"* "$INSTALL_DIR/bin/"
-  chmod +x "$INSTALL_DIR/bin/"*
-  if [[ -d "$PKG_ROOT/web" ]]; then
-    mkdir -p "$INSTALL_DIR/web"
-    cp -a "$PKG_ROOT/web/." "$INSTALL_DIR/web/"
+  # 链式安装时 PKG_ROOT 可能已是 INSTALL_DIR，避免 cp 同文件导致 set -e 退出
+  if [[ "$(cd "$PKG_ROOT" && pwd)" != "$(cd "$INSTALL_DIR" && pwd)" ]]; then
+    cp -f "$PKG_ROOT/bin/"* "$INSTALL_DIR/bin/"
+    if [[ -d "$PKG_ROOT/web" ]]; then
+      mkdir -p "$INSTALL_DIR/web"
+      cp -a "$PKG_ROOT/web/." "$INSTALL_DIR/web/"
+    fi
+    cp -f "$PKG_ROOT/install.sh" "$INSTALL_DIR/artifacts/install-node.sh" 2>/dev/null || true
   fi
-  # 制品缓存：本包全部二进制，便于作为父节点向下游分发
-  cp -f "$INSTALL_DIR/bin/"* "$INSTALL_DIR/artifacts/"
-  cp -f "$PKG_ROOT/install.sh" "$INSTALL_DIR/artifacts/install-node.sh" 2>/dev/null || true
+  chmod +x "$INSTALL_DIR/bin/"* 2>/dev/null || true
+  # 制品缓存：便于作为父节点向下游分发
+  cp -f "$INSTALL_DIR/bin/"* "$INSTALL_DIR/artifacts/" 2>/dev/null || true
+  if [[ -f "$INSTALL_DIR/artifacts/install-node.sh" ]]; then
+    chmod +x "$INSTALL_DIR/artifacts/install-node.sh" || true
+  elif [[ -f "$PKG_ROOT/install.sh" ]]; then
+    cp -f "$PKG_ROOT/install.sh" "$INSTALL_DIR/artifacts/install-node.sh" || true
+  fi
 }
 
 write_unit() {
