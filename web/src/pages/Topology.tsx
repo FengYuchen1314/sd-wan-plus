@@ -58,7 +58,7 @@ export default function Topology() {
             },
           },
         ],
-        layout: { name: 'dagre', rankDir: 'TB', spacingFactor: 1.3 },
+        layout: { name: 'dagre', rankDir: 'TB', spacingFactor: 1.3 } as any,
         wheelSensitivity: 0.3,
       });
 

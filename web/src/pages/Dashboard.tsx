@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { api } from '../api';
 import { Server, Share2, FileText, Wifi, WifiOff, Activity } from 'lucide-react';
 
@@ -19,13 +19,16 @@ export default function Dashboard() {
   const activeLinks = links.filter(l => l.enabled && l.status === 'Active').length;
 
   const stats = [
-    { label: '节点总数', value: nodes.length, icon: Server, color: '#3b82f6' },
-    { label: '在线节点', value: onlineCount, icon: Wifi, color: '#22c55e' },
-    { label: 'WG 链路', value: links.length, icon: Share2, color: '#8b5cf6' },
-    { label: '活跃链路', value: activeLinks, icon: Activity, color: '#0ea5e9' },
-    { label: '策略数量', value: policies.length, icon: FileText, color: '#f59e0b' },
-    { label: '离线节点', value: nodes.length - onlineCount, icon: WifiOff, color: '#ef4444' },
+    { label: '节点总数', value: nodes.length },
+    { label: '在线节点', value: onlineCount },
+    { label: 'WG 链路', value: links.length },
+    { label: '活跃链路', value: activeLinks },
+    { label: '策略数量', value: policies.length },
+    { label: '离线节点', value: nodes.length - onlineCount },
   ];
+
+  const icons = [Server, Wifi, Share2, Activity, FileText, WifiOff];
+  const colors = ['#3b82f6', '#22c55e', '#8b5cf6', '#0ea5e9', '#f59e0b', '#ef4444'];
 
   if (loading) return <div style={{ padding: 24, color: '#64748b' }}>加载中...</div>;
 
@@ -33,12 +36,17 @@ export default function Dashboard() {
     <div>
       <h2 style={{ fontSize: 22, fontWeight: 600, marginBottom: 20 }}>仪表盘</h2>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 16 }}>
-        {stats.map(({ label, value, icon: Icon, color }) => (
+        {stats.map(({ label, value }, i) => (
           <div key={label} style={{
             background: '#fff', borderRadius: 10, padding: 20, boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
           }}>
-            <p style={{ fontSize: 13, color: '#64748b', marginBottom: 4 }}>{label}</p>
-            <p style={{ fontSize: 28, fontWeight: 700 }}>{value}</p>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'start' }}>
+              <div>
+                <p style={{ fontSize: 13, color: '#64748b', marginBottom: 4 }}>{label}</p>
+                <p style={{ fontSize: 28, fontWeight: 700 }}>{value}</p>
+              </div>
+              {React.createElement(icons[i], { size: 20, color: colors[i] })}
+            </div>
           </div>
         ))}
       </div>

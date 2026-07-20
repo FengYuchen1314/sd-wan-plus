@@ -1,4 +1,4 @@
-import { ReactNode } from 'react';
+import type { ReactNode } from 'react';
 import { NavLink } from 'react-router-dom';
 import { LayoutDashboard, Share2, Server, UserPlus, FileText, RefreshCw, LogOut } from 'lucide-react';
 
