@@ -457,14 +457,12 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 
 	deadline := time.Now().Add(10 * time.Minute)
 	for time.Now().Before(deadline) {
-		allStaged := true
-		onlinePending := 0
+		pending := 0
 		for _, t := range targets {
 			n, err := s.db.GetNode(t.NodeID)
-			if err != nil {
+			if err != nil || n == nil || n.IsController {
 				continue
 			}
-			online := n.LastSeenAt != nil && time.Since(*n.LastSeenAt) < 2*time.Minute
 			s.updateMu.Lock()
 			st := ""
 			if s.activeUpdate != nil {
@@ -474,22 +472,47 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 			if st == "" {
 				st = t.Status
 			}
-			if online && st != core.UpdateStaged && st != core.UpdateCompleted && st != core.UpdateInstallFailed {
-				allStaged = false
-				onlinePending++
+			switch st {
+			case core.UpdateStaged, core.UpdateCompleted, core.UpdateInstallFailed,
+				core.UpdateDownloadFailed, core.UpdateSignatureInvalid, core.UpdateRolledBack:
+				continue
+			default:
+				pending++
 			}
 		}
 		s.broadcastUpdateProgress(jobID)
-		if allStaged || onlinePending == 0 {
+		if pending == 0 {
 			break
 		}
 		time.Sleep(2 * time.Second)
 		targets, _ = s.db.ListUpdateTargets(jobID)
 	}
+	// Mark still-pending prefetch targets as failed so install can proceed for the rest.
+	targets, _ = s.db.ListUpdateTargets(jobID)
+	for _, t := range targets {
+		n, _ := s.db.GetNode(t.NodeID)
+		if n != nil && n.IsController {
+			continue
+		}
+		s.updateMu.Lock()
+		st := ""
+		if s.activeUpdate != nil {
+			st = s.activeUpdate.StatusByNode[t.NodeID]
+		}
+		s.updateMu.Unlock()
+		if st == "" {
+			st = t.Status
+		}
+		if st != core.UpdateStaged && st != core.UpdateCompleted &&
+			st != core.UpdateInstallFailed && st != core.UpdateDownloadFailed {
+			s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateDownloadFailed, "prefetch timeout")
+		}
+	}
 
 	s.updateMu.Lock()
 	if s.activeUpdate != nil {
 		s.activeUpdate.Phase = "install"
+		s.activeUpdate.InstallNodeID = ""
 	}
 	s.updateMu.Unlock()
 	s.notify("updates", map[string]any{"job_id": jobID, "phase": "install"})
@@ -498,55 +521,105 @@ func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget
 	targets, _ = s.db.ListUpdateTargets(jobID)
 	needControllerRestart := false
 	for _, t := range targets {
-		if t.Status == core.UpdateCompleted || t.Status == core.UpdateInstallFailed || t.Status == core.UpdateRolledBack {
-			s.updateMu.Lock()
-			if s.activeUpdate != nil {
-				s.activeUpdate.StatusByNode[t.NodeID] = t.Status
-			}
-			s.updateMu.Unlock()
-			continue
-		}
 		n, _ := s.db.GetNode(t.NodeID)
 		if n != nil && n.IsController {
-			s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateInstalling, "")
-			if err := s.installControllerRelease(version); err != nil {
-				log.Printf("controller install %s: %v", version, err)
-				s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateInstallFailed, err.Error())
-			} else {
-				_ = s.db.TouchNodeSeen(n.ID, version, n.ActiveGeneration)
-				s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateCompleted, "")
-				needControllerRestart = true
-			}
-			s.broadcastUpdateProgress(jobID)
+			continue // controller last
+		}
+		s.updateMu.Lock()
+		st := ""
+		if s.activeUpdate != nil {
+			st = s.activeUpdate.StatusByNode[t.NodeID]
+		}
+		s.updateMu.Unlock()
+		if st == "" {
+			st = t.Status
+		}
+		if st == core.UpdateCompleted || st == core.UpdateInstallFailed || st == core.UpdateRolledBack ||
+			st == core.UpdateDownloadFailed || st == core.UpdateSignatureInvalid {
+			continue
+		}
+		if st != core.UpdateStaged && st != core.UpdateInstalling {
+			s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateInstallFailed, "not staged")
 			continue
 		}
 
-		waitUntil := time.Now().Add(3 * time.Minute)
+		// Serial leaf-first: only this node may install now.
+		s.updateMu.Lock()
+		if s.activeUpdate != nil {
+			s.activeUpdate.InstallNodeID = t.NodeID
+		}
+		s.updateMu.Unlock()
+		s.broadcastUpdateProgress(jobID)
+
+		waitUntil := time.Now().Add(5 * time.Minute)
+		finished := false
 		for time.Now().Before(waitUntil) {
 			s.updateMu.Lock()
-			st := ""
+			st = ""
 			if s.activeUpdate != nil {
 				st = s.activeUpdate.StatusByNode[t.NodeID]
 			}
 			s.updateMu.Unlock()
 			if st == core.UpdateCompleted || st == core.UpdateInstallFailed || st == core.UpdateRolledBack {
+				finished = true
 				break
-			}
-			if st == core.UpdateStaged || st == "" || st == core.UpdateInstalling || st == core.UpdatePrefetching {
-				time.Sleep(1 * time.Second)
-				s.broadcastUpdateProgress(jobID)
-				continue
 			}
 			time.Sleep(1 * time.Second)
 			s.broadcastUpdateProgress(jobID)
 		}
+		if !finished {
+			s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateInstallFailed, "install timeout")
+		}
+		s.updateMu.Lock()
+		if s.activeUpdate != nil {
+			s.activeUpdate.InstallNodeID = ""
+		}
+		s.updateMu.Unlock()
+	}
+
+	// Controller last: apply bins then restart after job is persisted Completed.
+	for _, t := range targets {
+		n, _ := s.db.GetNode(t.NodeID)
+		if n == nil || !n.IsController {
+			continue
+		}
+		s.updateMu.Lock()
+		st := ""
+		if s.activeUpdate != nil {
+			st = s.activeUpdate.StatusByNode[t.NodeID]
+		}
+		s.updateMu.Unlock()
+		if st == core.UpdateCompleted {
+			needControllerRestart = true
+			break
+		}
+		s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateInstalling, "")
+		if err := s.installControllerRelease(version); err != nil {
+			log.Printf("controller install %s: %v", version, err)
+			s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateInstallFailed, err.Error())
+		} else {
+			_ = s.db.TouchNodeSeen(n.ID, version, n.ActiveGeneration)
+			s.setUpdateNodeStatus(jobID, t.NodeID, t.ID, core.UpdateCompleted, "")
+			needControllerRestart = true
+		}
+		s.broadcastUpdateProgress(jobID)
 	}
 
 	_ = s.db.UpdateJobStatus(jobID, "Completed")
+	// Keep final statuses visible: leave StatusByNode, clear only InstallNodeID / phase marker via nil job after snapshot.
+	finalStatuses := map[string]string{}
 	s.updateMu.Lock()
+	if s.activeUpdate != nil {
+		for k, v := range s.activeUpdate.StatusByNode {
+			finalStatuses[k] = v
+		}
+	}
 	s.activeUpdate = nil
 	s.updateMu.Unlock()
-	s.notify("updates", map[string]any{"job_id": jobID, "status": "Completed"})
+	s.notify("updates", map[string]any{
+		"job_id": jobID, "status": "Completed", "phase": "",
+		"status_by_node": finalStatuses,
+	})
 	s.broadcastUpdateProgress(jobID)
 
 	if needControllerRestart {

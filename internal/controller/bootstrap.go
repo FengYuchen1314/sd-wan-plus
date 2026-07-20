@@ -331,21 +331,33 @@ func (s *Server) handleAgentUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	phase := job.Phase
 	// 主控由编排器本地安装并在任务结束后重启，避免中途 systemctl restart 清掉内存任务。
-	if st != nil && st.IsController && phase == "install" {
-		w.WriteHeader(http.StatusNoContent)
-		return
-	}
-	// During install phase, only nodes that finished prefetch get install orders;
-	// leaf-first: deeper nodes install first.
-	if phase == "install" {
-		s.updateMu.Lock()
-		status := job.StatusByNode[nodeID]
-		s.updateMu.Unlock()
-		if status != core.UpdateStaged && status != core.UpdateInstalling && status != core.UpdateCompleted {
+	if st != nil && st.IsController {
+		if phase == "install" {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		// prefetch: controller already staged by orchestrator
+		writeJSON(w, 200, map[string]any{
+			"job_id": job.JobID, "target_version": job.TargetVersion,
+			"phase": "prefetch", "files": job.Files, "depth": depth,
+		})
+		return
+	}
+	if phase == "install" {
+		s.updateMu.Lock()
+		status := job.StatusByNode[nodeID]
+		readyID := job.InstallNodeID
+		s.updateMu.Unlock()
 		if status == core.UpdateCompleted {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if status != core.UpdateStaged && status != core.UpdateInstalling {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		// 严格串行：一次只允许一个节点安装（叶子优先由编排器指定）。
+		if readyID == "" || readyID != nodeID {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}

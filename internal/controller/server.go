@@ -72,6 +72,8 @@ type activeUpdateJob struct {
 	Phase         string // prefetch | install
 	Files         []string
 	StatusByNode  map[string]string
+	// InstallNodeID is the only non-controller node allowed to install (leaf-first serial).
+	InstallNodeID string
 }
 
 func New(cfg Config) (*Server, error) {

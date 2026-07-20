@@ -356,6 +356,7 @@ PY
 PW_NODE_ID=$NODE_ID
 PW_PARENT_URL=http://127.0.0.1:$WEB_PORT
 PW_SERVE_CHILDREN=0
+PW_IS_CONTROLLER=1
 EOF
   echo "本机 Agent node_id=$NODE_ID"
 
@@ -368,6 +369,7 @@ Environment=PW_ARTIFACT_DIR=$INSTALL_DIR/artifacts
 Environment=PW_ROOT=$INSTALL_DIR
 Environment=PW_SERVE_CHILDREN=0
 Environment=PW_NODE_PORT=$NODE_PORT
+Environment=PW_IS_CONTROLLER=1
 EnvironmentFile=-$INSTALL_DIR/data/agent.env
 ExecStart=$INSTALL_DIR/bin/pathweaver-agent
 Restart=always

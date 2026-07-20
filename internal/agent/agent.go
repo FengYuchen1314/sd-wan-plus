@@ -322,8 +322,8 @@ func (a *Agent) scheduleServiceRestart() {
 	go func() {
 		time.Sleep(2 * time.Second)
 		units := []string{"pathweaver-netd", "pathweaver-updater", "pathweaver-agent"}
-		// 控制机还要重启主控（安装脚本嵌在 controller 进程里）
-		if _, err := os.Stat(filepath.Join(a.cfg.Root, "bin", "pathweaver-controller")); err == nil {
+		// 仅控制机 agent 重启 pathweaver；边缘节点即使缓存了 controller 二进制也不动主控服务。
+		if os.Getenv("PW_IS_CONTROLLER") == "1" {
 			if exec.Command("systemctl", "cat", "pathweaver").Run() == nil {
 				units = append([]string{"pathweaver"}, units...)
 			}

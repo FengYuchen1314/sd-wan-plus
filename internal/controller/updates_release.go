@@ -283,6 +283,10 @@ func (s *Server) handleUpdatesOverview(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	// 任务结束后仍展示最近一次目标状态，避免全部变成「空闲」造成误判。
+	if activeJob == nil && len(jobs) > 0 {
+		activeJob = &jobs[0]
+	}
 	if activeJob != nil {
 		targets, _ = s.db.ListUpdateTargets(activeJob.ID)
 		for _, t := range targets {
@@ -298,8 +302,14 @@ func (s *Server) handleUpdatesOverview(w http.ResponseWriter, r *http.Request) {
 		online := n.LastSeenAt != nil && now.Sub(*n.LastSeenAt) < 90*time.Second
 		depth, _ := s.db.NodeDepth(n.ID)
 		st := statusByNode[n.ID]
-		if st == "" {
-			st = "Idle"
+		if st == "" || st == core.UpdateWaiting {
+			if activeJob != nil && activeJob.Status == "Running" {
+				if st == "" {
+					st = core.UpdateWaiting
+				}
+			} else {
+				st = "Idle"
+			}
 		}
 		errMsg := ""
 		for _, t := range targets {
@@ -312,7 +322,7 @@ func (s *Server) handleUpdatesOverview(w http.ResponseWriter, r *http.Request) {
 			"id": n.ID, "display_name": n.DisplayName, "is_controller": n.IsController,
 			"agent_version": n.AgentVersion, "online": online, "depth": depth,
 			"update_status": st, "error_message": errMsg,
-			"needs_update": activeJob != nil && n.AgentVersion != activeJob.TargetVersion && st != core.UpdateCompleted,
+			"needs_update": activeJob != nil && activeJob.Status == "Running" && n.AgentVersion != activeJob.TargetVersion && st != core.UpdateCompleted,
 		})
 	}
 
