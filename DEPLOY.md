@@ -2,40 +2,33 @@
 
 ## 源码构建部署
 
-### 前置
+### 使用 GitHub Release 安装包（推荐）
 
-- Debian 12+ / Ubuntu 22.04+
-- Go 1.22+
-- Node.js 20+（构建前端）
-- wireguard-tools, nftables, iproute2
-
-### 构建
+每次 push 自动发布统一包到 Releases。下载 `pathweaver-*-linux-amd64.tar.gz` 后：
 
 ```bash
-git clone https://github.com/FengYuchen1314/sd-wan-plus.git
-cd sd-wan-plus
-bash build-release.sh   # 或 Windows: .\build.ps1
+tar -xzf pathweaver-*-linux-amd64.tar.gz && cd pathweaver-*-linux-*
+sudo bash install.sh --role controller --public-address YOUR_IP --password 'secret'
 ```
 
-### 安装
+子节点：
 
 ```bash
-sudo bash installer/install-controller.sh
+sudo bash install.sh --role node --parent-url http://PARENT:14302 --token TOKEN --name node-a
 ```
 
 ### 防火墙
 
 ```bash
-sudo ufw allow 8443/tcp
-sudo ufw allow 8444/tcp
-sudo ufw allow 30000:30999/udp
+sudo ufw allow 14301/tcp
+sudo ufw allow 14302/tcp
+sudo ufw allow 14303:14399/udp
 ```
 
 ### 验证
 
 ```bash
-curl http://localhost:8443/api/health
-# {"status":"ok","version":"0.1.0"}
+curl http://localhost:14301/api/health
 ```
 
 ## systemd

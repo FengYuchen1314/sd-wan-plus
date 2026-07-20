@@ -311,9 +311,9 @@ Updater 独立存在，是为了保证 Agent 自身更新失败时仍有恢复�
 建议默认值：
 
 ```text
-Web 管理端口：8443/TCP
-节点服务端口：8444/TCP
-WireGuard 端口池：30000-30999/UDP
+Web 管理端口：14301/TCP
+节点服务端口：14302/TCP
+WireGuard 端口池：14303-14399/UDP
 Overlay 网段：10.250.0.0/16
 ```
 

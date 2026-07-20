@@ -58,34 +58,59 @@ set PW_STATIC_DIR=web/dist
 cd web && npm run dev
 ```
 
-访问 `http://127.0.0.1:8443`（或 Vite `5173`）。用户名固定 `admin`。
+访问 `http://127.0.0.1:14301`（或 Vite `5173`）。用户名固定 `admin`。
 
-## 生产安装
+## 快速安装（统一安装包）
+
+主控与子节点使用 **同一 Release 包**，仅安装参数不同。每次 push 到 `master` 时 GitHub Actions 自动编译并更新 [Latest Release](https://github.com/FengYuchen1314/sd-wan-plus/releases/latest)。
+
+### 控制机
 
 ```bash
-sudo bash installer/install-controller.sh
+# 从 Latest Release 下载对应架构的 tar.gz 后：
+tar -xzf pathweaver-*-linux-amd64.tar.gz
+cd pathweaver-*-linux-amd64
+sudo bash install.sh --role controller \
+  --public-address YOUR_PUBLIC_IP \
+  --password 'YOUR_PASSWORD'
 ```
 
-默认端口：Web `8443`、节点服务 `8444`、WG `30000-30999`、Overlay `10.250.0.0/16`。
+默认端口：Web `14301`、节点服务 `14302`、WG `14303-14399`。
 
-## 接入新节点
+### 子节点（链式，推荐）
 
-1. Web UI →「接入」
-2. 选择父节点 → 生成一次性命令
-3. 在目标机执行（从父节点拉制品，无需 GitHub）
+在控制台「接入」复制命令，或：
+
+```bash
+sudo bash install.sh --role node \
+  --parent-url http://PARENT_IP:14302 \
+  --token ONE_TIME_TOKEN \
+  --name node-a
+```
+
+子节点**全部文件只从父节点拉取**，不访问 GitHub、不必直连控制机。
+
+## 一键更新
+
+控制机 UI「更新中心」创建并启动：制品沿控制树预分发 → 叶子优先安装。
+
+## WireGuard
+
+见 [docs/WIREGUARD.md](docs/WIREGUARD.md)：主动端单向发起握手 + Keepalive；被动端无固定 Endpoint，由内核动态学习维护。
 
 ## 环境变量
 
 | 变量 | 默认 | 说明 |
 |------|------|------|
-| `PW_WEB_PORT` | 8443 | Web 管理端口 |
-| `PW_NODE_PORT` | 8444 | 节点服务端口 |
-| `PW_WG_PORT_START/END` | 30000/30999 | WG 端口池 |
+| `PW_WEB_PORT` | 14301 | Web 管理端口 |
+| `PW_NODE_PORT` | 14302 | 节点服务端口（bootstrap/制品） |
+| `PW_WG_PORT_START/END` | 14303/14399 | WG 端口池 |
 | `PW_PUBLIC_ADDRESS` | 127.0.0.1 | 公网地址 |
 | `PW_DB_PATH` | ./data/pathweaver.db | SQLite |
 | `PW_STATIC_DIR` | | 前端静态目录 |
 | `PW_OVERLAY_CIDR` | 10.250.0.0/16 | Overlay 网段 |
 | `PW_TLS` | | `1` 启用 Cookie Secure |
+| `PW_SERVE_CHILDREN` | 1 | 节点是否对下级提供制品代理（控制机本地 Agent 设 0） |
 
 ## 进程
 

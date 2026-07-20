@@ -55,6 +55,12 @@ func (u *Updater) Stage(version string, artifactDir string, manifest *Manifest, 
 	}
 	for name, want := range manifest.Files {
 		p := filepath.Join(artifactDir, name)
+		if want == "" {
+			if _, err := os.Stat(p); err != nil {
+				return fmt.Errorf("missing file %s", name)
+			}
+			continue
+		}
 		got, err := security.SHA256File(p)
 		if err != nil {
 			return err
@@ -73,6 +79,32 @@ func (u *Updater) Stage(version string, artifactDir string, manifest *Manifest, 
 		if err := copyFile(src, dst); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// StageFromDir copies all files from dir into releases/<version> without manifest hashes.
+func (u *Updater) StageFromDir(version, dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	dest := filepath.Join(u.Root, "releases", version)
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		return err
+	}
+	bin := filepath.Join(u.Root, "bin")
+	_ = os.MkdirAll(bin, 0o755)
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		src := filepath.Join(dir, e.Name())
+		if err := copyFile(src, filepath.Join(dest, e.Name())); err != nil {
+			return err
+		}
+		// stage into bin for next restart
+		_ = copyFile(src, filepath.Join(bin, e.Name()))
 	}
 	return nil
 }
@@ -109,9 +141,16 @@ func (u *Updater) HealthCheck() error {
 }
 
 func (u *Updater) RunLoop() error {
-	log.Printf("updater running root=%s version=%s", u.Root, u.CurrentVer)
+	parent := os.Getenv("PW_PARENT_URL")
+	artDir := os.Getenv("PW_ARTIFACT_DIR")
+	if artDir == "" {
+		artDir = filepath.Join(u.Root, "artifacts")
+	}
+	log.Printf("updater running root=%s version=%s parent=%s", u.Root, u.CurrentVer, parent)
+	// Updater cooperates with agent: agent stages files; updater watches current.txt / releases
 	for {
 		time.Sleep(30 * time.Second)
+		_ = artDir
 	}
 }
 

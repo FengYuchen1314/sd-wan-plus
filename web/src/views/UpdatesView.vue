@@ -42,7 +42,7 @@ onMounted(load)
 <template>
   <div>
     <h1 class="page-title">更新中心</h1>
-    <p class="page-sub">制品沿控制树预分发；叶子优先安装，控制机最后更新</p>
+    <p class="page-sub">制品沿控制树从父节点预分发（节点不访问 GitHub）；叶子优先安装，控制机最后更新</p>
     <div class="row-actions" style="margin-bottom:1rem">
       <input v-model="version" placeholder="目标版本 e.g. 0.2.0" style="max-width:220px" />
       <button :disabled="!version" @click="create">创建更新任务</button>

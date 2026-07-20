@@ -25,7 +25,10 @@ COPY --from=web /web/dist/ /opt/pathweaver/web/
 ENV PW_STATIC_DIR=/opt/pathweaver/web \
     PW_DATA_DIR=/opt/pathweaver/data \
     PW_DB_PATH=/opt/pathweaver/data/pathweaver.db \
-    PW_WEB_PORT=8443
-EXPOSE 8443 8444
+    PW_WEB_PORT=14301 \
+    PW_NODE_PORT=14302 \
+    PW_WG_PORT_START=14303 \
+    PW_WG_PORT_END=14399
+EXPOSE 14301 14302
 VOLUME ["/opt/pathweaver/data"]
 CMD ["/opt/pathweaver/bin/pathweaver-controller"]

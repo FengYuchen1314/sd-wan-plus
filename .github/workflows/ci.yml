@@ -1,12 +1,12 @@
 name: ci
 
 on:
+  pull_request:
   push:
     branches: [master, main]
-  pull_request:
 
 jobs:
-  go:
+  test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -14,23 +14,10 @@ jobs:
         with:
           go-version: "1.22"
       - run: go test ./internal/...
-      - run: |
-          go build -o bin/pathweaver-controller ./cmd/pathweaver-controller
-          go build -o bin/pathweaver-agent ./cmd/pathweaver-agent
-          go build -o bin/pathweaver-netd ./cmd/pathweaver-netd
-          go build -o bin/pathweaver-updater ./cmd/pathweaver-updater
-
-  web:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: web
-    steps:
-      - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "22"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - run: npm ci
-      - run: npm run build
+      - working-directory: web
+        run: npm ci && npm run build

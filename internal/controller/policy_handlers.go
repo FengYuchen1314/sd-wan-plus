@@ -2,8 +2,10 @@ package controller
 
 import (
 	"net/http"
+	"path/filepath"
 	"time"
 
+	"github.com/FengYuchen1314/sd-wan-plus/internal/artifacts"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/routing"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/topology"
@@ -207,8 +209,10 @@ func (s *Server) handleListUpdates(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateUpdate(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		TargetVersion  string `json:"target_version"`
-		ManifestSHA256 string `json:"manifest_sha256"`
+		TargetVersion  string   `json:"target_version"`
+		ManifestSHA256 string   `json:"manifest_sha256"`
+		Files          []string `json:"files"`
+		SourceDir      string   `json:"source_dir"` // optional: stage release from this dir into artifact cache
 	}
 	if err := readJSON(r, &body); err != nil || body.TargetVersion == "" {
 		writeJSON(w, 400, map[string]string{"message": "target_version required"})
@@ -216,6 +220,21 @@ func (s *Server) handleCreateUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.ManifestSHA256 == "" {
 		body.ManifestSHA256 = "pending"
+	}
+	files := body.Files
+	if len(files) == 0 {
+		files = artifacts.NodeBinaries
+	}
+	// Stage release into controller artifact cache (origin). Children pull only from parents.
+	if body.SourceDir != "" && s.store != nil {
+		if err := s.store.SeedRelease(body.TargetVersion, body.SourceDir); err != nil {
+			writeJSON(w, 400, map[string]string{"message": "seed release: " + err.Error()})
+			return
+		}
+	} else if s.store != nil {
+		_ = s.store.Seed("bin", files)
+		_ = s.store.Seed(filepath.Join(s.cfg.DataDir, "artifacts"), files)
+		_ = s.store.SeedRelease(body.TargetVersion, "bin")
 	}
 	job, err := s.db.CreateUpdateJob(body.TargetVersion, body.ManifestSHA256)
 	if err != nil {
@@ -229,34 +248,108 @@ func (s *Server) handleCreateUpdate(w http.ResponseWriter, r *http.Request) {
 	}
 	admin := adminFrom(r.Context())
 	_ = s.db.AddAudit(&admin.ID, "create_update", "update_job", &job.ID, body.TargetVersion, clientIP(r))
-	writeJSON(w, 200, job)
+	writeJSON(w, 200, map[string]any{"job": job, "files": files, "note": "artifacts staged on controller; start to prefetch via control tree"})
 }
 
 func (s *Server) handleStartUpdate(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
+	jobs, err := s.db.ListUpdateJobs()
+	if err != nil {
+		writeJSON(w, 500, map[string]string{"message": err.Error()})
+		return
+	}
+	var job *core.UpdateJob
+	for i := range jobs {
+		if jobs[i].ID == id {
+			job = &jobs[i]
+			break
+		}
+	}
+	if job == nil {
+		writeJSON(w, 404, map[string]string{"message": "job not found"})
+		return
+	}
 	_ = s.db.UpdateJobStatus(id, "Running")
 	targets, err := s.db.ListUpdateTargets(id)
 	if err != nil {
 		writeJSON(w, 500, map[string]string{"message": err.Error()})
 		return
 	}
-	// Leaf-first: already ordered by depth DESC
-	go s.runUpdateJob(id, targets)
-	writeJSON(w, 200, map[string]string{"status": "started"})
+	go s.runUpdateJob(id, job.TargetVersion, targets)
+	writeJSON(w, 200, map[string]string{"status": "started", "mode": "prefetch-then-leaf-install"})
 }
 
-func (s *Server) runUpdateJob(jobID string, targets []core.UpdateTarget) {
-	for _, t := range targets {
-		_ = s.db.UpdateTargetStatus(t.ID, core.UpdatePrefetching, "")
-		_ = s.db.UpdateTargetStatus(t.ID, core.UpdateVerifying, "")
-		_ = s.db.UpdateTargetStatus(t.ID, core.UpdateStaged, "")
-		_ = s.db.UpdateTargetStatus(t.ID, core.UpdateInstalling, "")
-		_ = s.db.UpdateTargetStatus(t.ID, core.UpdateRestarting, "")
-		_ = s.db.UpdateTargetStatus(t.ID, core.UpdateHealthChecking, "")
-		_ = s.db.UpdateTargetStatus(t.ID, core.UpdateCompleted, "")
-		s.notify("updates", map[string]any{"job_id": jobID, "target": t.ID, "status": core.UpdateCompleted})
+func (s *Server) runUpdateJob(jobID, version string, targets []core.UpdateTarget) {
+	files := artifacts.NodeBinaries
+	// Phase 1: prefetch — all nodes pull from parent (controller is origin)
+	s.updateMu.Lock()
+	s.activeUpdate = &activeUpdateJob{
+		JobID: jobID, TargetVersion: version, Phase: "prefetch",
+		Files: files, StatusByNode: map[string]string{},
 	}
+	s.updateMu.Unlock()
+	s.notify("updates", map[string]any{"job_id": jobID, "phase": "prefetch"})
+
+	deadline := time.Now().Add(10 * time.Minute)
+	for time.Now().Before(deadline) {
+		allStaged := true
+		onlinePending := 0
+		for _, t := range targets {
+			n, err := s.db.GetNode(t.NodeID)
+			if err != nil {
+				continue
+			}
+			online := n.LastSeenAt != nil && time.Since(*n.LastSeenAt) < 2*time.Minute
+			s.updateMu.Lock()
+			st := s.activeUpdate.StatusByNode[t.NodeID]
+			s.updateMu.Unlock()
+			if online && st != core.UpdateStaged && st != core.UpdateCompleted {
+				allStaged = false
+				onlinePending++
+			}
+		}
+		if allStaged || onlinePending == 0 {
+			break
+		}
+		time.Sleep(2 * time.Second)
+		targets, _ = s.db.ListUpdateTargets(jobID)
+	}
+
+	// Phase 2: install leaf-first (targets already ordered depth DESC)
+	s.updateMu.Lock()
+	if s.activeUpdate != nil {
+		s.activeUpdate.Phase = "install"
+	}
+	s.updateMu.Unlock()
+	s.notify("updates", map[string]any{"job_id": jobID, "phase": "install"})
+
+	targets, _ = s.db.ListUpdateTargets(jobID)
+	for _, t := range targets {
+		// wait until this node reports completed or timeout
+		waitUntil := time.Now().Add(3 * time.Minute)
+		for time.Now().Before(waitUntil) {
+			s.updateMu.Lock()
+			st := ""
+			if s.activeUpdate != nil {
+				st = s.activeUpdate.StatusByNode[t.NodeID]
+			}
+			s.updateMu.Unlock()
+			if st == core.UpdateCompleted || st == core.UpdateInstallFailed || st == core.UpdateRolledBack {
+				break
+			}
+			// mark staged nodes ready to install by ensuring they see install phase
+			if st == core.UpdateStaged || st == "" {
+				time.Sleep(1 * time.Second)
+				continue
+			}
+			time.Sleep(1 * time.Second)
+		}
+	}
+
 	_ = s.db.UpdateJobStatus(jobID, "Completed")
+	s.updateMu.Lock()
+	s.activeUpdate = nil
+	s.updateMu.Unlock()
 	s.notify("updates", map[string]any{"job_id": jobID, "status": "Completed"})
 }
 

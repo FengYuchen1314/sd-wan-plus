@@ -4,9 +4,11 @@ import "time"
 
 const (
 	ProtocolVersion = 1
-	ProductVersion  = "0.1.0"
 	DefaultUsername = "admin"
 )
+
+// ProductVersion is overridden at link time by release builds (-X ...ProductVersion=).
+var ProductVersion = "0.1.0"
 
 // Config rollout statuses
 const (

@@ -62,19 +62,24 @@ func Compile(db *storage.DB, generation uint64, box interface {
 			peer := nodeByID[peerID]
 			isInit := n.ID == l.InitiatorNodeID
 			cfg := core.WireGuardLinkCfg{
-				LinkID:        l.ID,
-				InterfaceName: iface,
-				ListenPort:    uint32(l.ListenerPort),
-				PeerPublicKey: peer.WGPublicKey,
-				IsInitiator:   isInit,
+				LinkID:         l.ID,
+				InterfaceName:  iface,
+				PeerPublicKey:  peer.WGPublicKey,
+				IsInitiator:    isInit,
 				NodePrivateKey: priv,
-				OverlayIP:     n.OverlayIPv4,
-				PeerOverlayIP: peer.OverlayIPv4,
+				OverlayIP:      n.OverlayIPv4,
+				PeerOverlayIP:  peer.OverlayIPv4,
 			}
 			if isInit {
+				// 主动端：固定 Endpoint，keepalive 单向发起握手
 				cfg.PeerEndpoint = fmt.Sprintf("%s:%d", l.ListenerAddress, l.ListenerPort)
 				cfg.PersistentKeepalive = 25
-				cfg.ListenPort = 0 // initiator may not bind listener port of peer
+				cfg.ListenPort = 0
+			} else {
+				// 被动端：仅监听；Endpoint 由内核在收到握手后动态学习/维护
+				cfg.ListenPort = uint32(l.ListenerPort)
+				cfg.PeerEndpoint = ""
+				cfg.PersistentKeepalive = 0
 			}
 			st.WireGuardLinks = append(st.WireGuardLinks, cfg)
 		}

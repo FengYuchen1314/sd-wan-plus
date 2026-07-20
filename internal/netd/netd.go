@@ -151,18 +151,26 @@ func (s *Server) apply(st *core.NodeDesiredState) error {
 
 	for _, l := range st.WireGuardLinks {
 		_ = run("ip", "link", "add", "dev", l.InterfaceName, "type", "wireguard")
-		// write temp conf
+		// WireGuard 语义（规格）:
+		// - 主动端(IsInitiator): 设置 Endpoint + PersistentKeepalive，负责单向发起握手
+		// - 被动端: 只 ListenPort，不写 Endpoint；内核在收到握手后动态学习对端地址并维护
 		conf := fmt.Sprintf("[Interface]\nPrivateKey = %s\n", l.NodePrivateKey)
-		if l.ListenPort > 0 && !l.IsInitiator {
+		if !l.IsInitiator && l.ListenPort > 0 {
 			conf += fmt.Sprintf("ListenPort = %d\n", l.ListenPort)
 		}
 		conf += fmt.Sprintf("\n[Peer]\nPublicKey = %s\nAllowedIPs = %s/32\n", l.PeerPublicKey, l.PeerOverlayIP)
-		if l.PeerEndpoint != "" {
+		if l.IsInitiator {
+			if l.PeerEndpoint == "" {
+				return fmt.Errorf("initiator link %s missing peer endpoint", l.LinkID)
+			}
 			conf += fmt.Sprintf("Endpoint = %s\n", l.PeerEndpoint)
+			ka := l.PersistentKeepalive
+			if ka == 0 {
+				ka = 25
+			}
+			conf += fmt.Sprintf("PersistentKeepalive = %d\n", ka)
 		}
-		if l.PersistentKeepalive > 0 {
-			conf += fmt.Sprintf("PersistentKeepalive = %d\n", l.PersistentKeepalive)
-		}
+		// 被动端故意不写 Endpoint / Keepalive → 由 WireGuard 动态维护对端地址
 		tmp := filepath.Join(os.TempDir(), l.InterfaceName+".conf")
 		if err := os.WriteFile(tmp, []byte(conf), 0o600); err != nil {
 			return err

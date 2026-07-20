@@ -1,0 +1,110 @@
+name: release
+
+# 每次 push 到主分支：编译统一安装包（主控/子节点同一包），发布到 GitHub Release(latest)
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+      - run: go test ./internal/...
+
+  package:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.22"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build web UI
+        working-directory: web
+        run: npm ci && npm run build
+
+      - name: Build release package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          VERSION: ${{ github.sha }}
+          FORCE_WEB_BUILD: "0"
+        run: |
+          chmod +x packaging/build-package.sh
+          VERSION="0.1.0-${GITHUB_SHA::7}" packaging/build-package.sh
+          ls -la dist/
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pathweaver-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  publish:
+    needs: package
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: List assets
+        run: find release-assets -type f -ls
+
+      - name: Publish / update latest release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: PathWeaver latest
+          body: |
+            统一安装包（主控与子节点同一包，`--role` 区分）。
+
+            ### 控制机
+            ```bash
+            tar -xzf pathweaver-*-linux-amd64.tar.gz && cd pathweaver-*-linux-amd64
+            sudo bash install.sh --role controller --public-address YOUR_IP --password 'SECRET'
+            ```
+
+            ### 子节点（链式，仅从父节点拉文件）
+            ```bash
+            sudo bash install.sh --role node --parent-url http://PARENT:14302 --token TOKEN --name node-a
+            ```
+
+            Commit: ${{ github.sha }}
+          files: |
+            release-assets/**/*.tar.gz
+          make_latest: true
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

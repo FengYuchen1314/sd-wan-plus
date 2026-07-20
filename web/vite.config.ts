@@ -6,9 +6,9 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': 'http://127.0.0.1:8443',
-      '/ws': { target: 'ws://127.0.0.1:8443', ws: true },
-      '/bootstrap': 'http://127.0.0.1:8443',
+      '/api': 'http://127.0.0.1:14301',
+      '/ws': { target: 'ws://127.0.0.1:14301', ws: true },
+      '/bootstrap': 'http://127.0.0.1:14301',
     },
   },
   build: {

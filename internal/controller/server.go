@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -11,7 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/FengYuchen1314/sd-wan-plus/internal/artifacts"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
+	"github.com/FengYuchen1314/sd-wan-plus/internal/ports"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/security"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/storage"
 	"github.com/go-chi/chi/v5"
@@ -38,7 +41,7 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		WebPort: 8443, NodePort: 8444, WGPortStart: 30000, WGPortEnd: 30999,
+		WebPort: ports.Web, NodePort: ports.Node, WGPortStart: ports.WGStart, WGPortEnd: ports.WGEnd,
 		PublicAddress: "127.0.0.1", OverlayCIDR: "10.250.0.0/16",
 		DBPath: "./data/pathweaver.db", StaticDir: "", KeyFile: "./data/.pathweaver.key",
 		SessionHours: 48, MaxLoginAttempts: 5, LoginWindowSec: 300, DataDir: "./data",
@@ -46,13 +49,24 @@ func DefaultConfig() Config {
 }
 
 type Server struct {
-	cfg     Config
-	db      *storage.DB
-	box     *security.SecretBox
-	limiter *security.RateLimiter
-	hub     *WSHub
-	mu      sync.Mutex
-	desired map[string]*core.NodeDesiredState // latest desired per node for agents
+	cfg      Config
+	db       *storage.DB
+	box      *security.SecretBox
+	limiter  *security.RateLimiter
+	hub      *WSHub
+	mu       sync.Mutex
+	desired  map[string]*core.NodeDesiredState
+	store    *artifacts.Store
+	updateMu sync.Mutex
+	activeUpdate *activeUpdateJob
+}
+
+type activeUpdateJob struct {
+	JobID         string
+	TargetVersion string
+	Phase         string // prefetch | install
+	Files         []string
+	StatusByNode  map[string]string
 }
 
 func New(cfg Config) (*Server, error) {
@@ -74,11 +88,26 @@ func New(cfg Config) (*Server, error) {
 		db.Close()
 		return nil, err
 	}
+	artDir := filepath.Join(cfg.DataDir, "artifacts")
+	_ = os.MkdirAll(artDir, 0o755)
+	store := artifacts.New(artDir, "")
+	for _, dir := range []string{"bin", filepath.Join("..", "bin"), "/opt/pathweaver/bin"} {
+		_ = store.Seed(dir, artifacts.NodeBinaries)
+	}
+	// Cache unified installer as install-node.sh for chain installs
+	for _, cand := range []string{"install.sh", "/opt/pathweaver/install.sh", filepath.Join(cfg.DataDir, "..", "install.sh")} {
+		if st, err := os.Stat(cand); err == nil && !st.IsDir() {
+			_ = copyFileSimple(cand, filepath.Join(artDir, "install-node.sh"))
+			break
+		}
+	}
+
 	s := &Server{
 		cfg: cfg, db: db, box: box,
 		limiter: security.NewRateLimiter(cfg.MaxLoginAttempts, time.Duration(cfg.LoginWindowSec)*time.Second),
 		hub:     NewWSHub(),
 		desired: map[string]*core.NodeDesiredState{},
+		store:   store,
 	}
 	return s, nil
 }
@@ -156,6 +185,8 @@ func (s *Server) Router() http.Handler {
 	// Agent pull desired config (node auth via node id header for V1; mTLS later)
 	r.Get("/api/agent/desired/{nodeID}", s.handleAgentDesired)
 	r.Post("/api/agent/heartbeat", s.handleAgentHeartbeat)
+	r.Get("/api/agent/update/{nodeID}", s.handleAgentUpdate)
+	r.Post("/api/agent/update/report", s.handleAgentUpdateReport)
 
 	if s.cfg.StaticDir != "" {
 		fileServer(r, s.cfg.StaticDir)
@@ -172,6 +203,8 @@ func (s *Server) NodeRouter() http.Handler {
 	r.Get("/bootstrap/artifact/{name}", s.handleArtifact)
 	r.Get("/api/agent/desired/{nodeID}", s.handleAgentDesired)
 	r.Post("/api/agent/heartbeat", s.handleAgentHeartbeat)
+	r.Get("/api/agent/update/{nodeID}", s.handleAgentUpdate)
+	r.Post("/api/agent/update/report", s.handleAgentUpdateReport)
 	r.Get("/api/health", s.handleHealth)
 	return r
 }
@@ -205,6 +238,21 @@ func (s *Server) ListenAndServe(ctx context.Context) error {
 
 func formatAddr(port int) string {
 	return ":" + itoa(port)
+}
+
+func copyFileSimple(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o755)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	_, err = io.Copy(out, in)
+	return err
 }
 
 func itoa(n int) string {

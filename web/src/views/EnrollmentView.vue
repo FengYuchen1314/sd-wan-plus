@@ -49,7 +49,7 @@ onMounted(load)
 <template>
   <div>
     <h1 class="page-title">接入新节点</h1>
-    <p class="page-sub">选择父节点生成一次性安装命令；新节点从父节点拉取制品，无需访问 GitHub</p>
+    <p class="page-sub">选择父节点生成一次性安装命令；新节点全部文件只从父节点拉取，不访问 GitHub / 不必直连控制机</p>
     <div class="card" style="max-width:560px">
       <div class="form-row">
         <label>父节点</label>

@@ -309,9 +309,14 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	cmd := fmt.Sprintf(`curl -fsSL "http://%s:%d/bootstrap/install.sh?token=%s" | sudo bash`, addr, parent.NodeServicePort, tok)
+	unified := fmt.Sprintf("sudo bash install.sh --role node --parent-url http://%s:%d --token %s --name %s", addr, parent.NodeServicePort, tok, body.SuggestedNodeName)
 	admin := adminFrom(r.Context())
 	_ = s.db.AddAudit(&admin.ID, "create_enrollment_token", "enrollment_token", &t.ID, body.SuggestedNodeName, clientIP(r))
-	writeJSON(w, 200, map[string]any{"token": t, "install_command": cmd, "parent_address": addr, "parent_port": parent.NodeServicePort})
+	writeJSON(w, 200, map[string]any{
+		"token": t, "install_command": cmd, "install_command_unified": unified,
+		"parent_address": addr, "parent_port": parent.NodeServicePort,
+		"note": "链式安装：全部文件只从父节点拉取；主控与子节点使用同一 Release 安装包",
+	})
 }
 
 func (s *Server) handleRevokeToken(w http.ResponseWriter, r *http.Request) {
