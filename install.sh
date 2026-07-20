@@ -10,17 +10,15 @@ if [ "$(id -u)" -ne 0 ]; then err "请使用 root: sudo bash install.sh"; exit 1
 
 ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH="x86_64";; aarch64) ARCH="aarch64";; *) err "不支持的架构: $ARCH"; exit 1;; esac
 
-# ─── 端口工具 ───
+# ─── 端口工具 (仅本地 127.0.0.1 检测) ───
 
 port_is_free() {
     local port=$1 proto=$2
-    if ss -"${proto:0:1}"ln 2>/dev/null | grep -qE "[[:space:]]$port[[:space:]]"; then return 1; fi
-    # 绑定验证
-    if [ "$proto" = "udp" ]; then
-        timeout 1 nc -u -l "$port" &>/dev/null & local p=$!; sleep 0.2; kill $p 2>/dev/null; wait $p 2>/dev/null
-    else
-        timeout 1 nc -l "$port" &>/dev/null & local p=$!; sleep 0.2; kill $p 2>/dev/null; wait $p 2>/dev/null
-    fi
+    case "$proto" in
+        tcp) ss -tlnH 2>/dev/null | awk '{print $4}' | grep -qE ":(127\.0\.0\.1|0\.0\.0\.0|\*|\[::\]):$port$" && return 1 ;;
+        udp) ss -ulnH 2>/dev/null | awk '{print $4}' | grep -qE ":(127\.0\.0\.1|0\.0\.0\.0|\*|\[::\]):$port$" && return 1 ;;
+    esac
+    return 0
 }
 
 find_free_port() {
@@ -28,7 +26,7 @@ find_free_port() {
     local port=$start
     for ((i=0; i<max; i++)); do
         [ $port -gt 65535 ] && port=1024
-        if port_is_free $port "$proto" 2>/dev/null; then echo $port; return 0; fi
+        if port_is_free $port "$proto"; then echo $port; return 0; fi
         port=$((port + 1))
     done
     return 1
@@ -41,7 +39,7 @@ find_free_port_range() {
         [ $((port + count)) -gt 65535 ] && port=1024
         local ok=1
         for ((j=0; j<count; j++)); do
-            port_is_free $((port + j)) udp 2>/dev/null || { ok=0; break; }
+            port_is_free $((port + j)) udp || { ok=0; break; }
         done
         if [ $ok -eq 1 ]; then echo $port; return 0; fi
         port=$((port + 20))
