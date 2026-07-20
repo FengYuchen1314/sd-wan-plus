@@ -6,39 +6,42 @@ log()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
 err()  { echo -e "${RED}[ERROR]${NC} $1"; }
 
-if [ "$(id -u)" -ne 0 ]; then err "请使用 root 权限: sudo bash install.sh"; exit 1; fi
+if [ "$(id -u)" -ne 0 ]; then err "请使用 root: sudo bash install.sh"; exit 1; fi
 
 ARCH=$(uname -m); case "$ARCH" in x86_64) ARCH="x86_64";; aarch64) ARCH="aarch64";; *) err "不支持的架构: $ARCH"; exit 1;; esac
 
-log "PathWeaver SD-WAN 一键安装 — $ARCH"
-
-# ─── 端口工具函数 ───
+# ─── 端口工具 ───
 
 port_is_free() {
     local port=$1 proto=$2
     if ss -"${proto:0:1}"ln 2>/dev/null | grep -qE "[[:space:]]$port[[:space:]]"; then return 1; fi
-    return 0
+    # 绑定验证
+    if [ "$proto" = "udp" ]; then
+        timeout 1 nc -u -l "$port" &>/dev/null & local p=$!; sleep 0.2; kill $p 2>/dev/null; wait $p 2>/dev/null
+    else
+        timeout 1 nc -l "$port" &>/dev/null & local p=$!; sleep 0.2; kill $p 2>/dev/null; wait $p 2>/dev/null
+    fi
 }
 
 find_free_port() {
-    local start=$1 proto=$2 limit=${3:-100}
+    local start=$1 proto=$2 max=${3:-200}
     local port=$start
-    for ((i=0; i<limit; i++)); do
+    for ((i=0; i<max; i++)); do
         [ $port -gt 65535 ] && port=1024
-        if port_is_free $port "$proto"; then echo $port; return 0; fi
+        if port_is_free $port "$proto" 2>/dev/null; then echo $port; return 0; fi
         port=$((port + 1))
     done
     return 1
 }
 
 find_free_port_range() {
-    local start=$1 count=$2 limit=${3:-40}
+    local start=$1 count=$2 max=${3:-60}
     local port=$start
-    for ((i=0; i<limit; i++)); do
+    for ((i=0; i<max; i++)); do
         [ $((port + count)) -gt 65535 ] && port=1024
         local ok=1
         for ((j=0; j<count; j++)); do
-            if ! port_is_free $((port + j)) udp; then ok=0; break; fi
+            port_is_free $((port + j)) udp 2>/dev/null || { ok=0; break; }
         done
         if [ $ok -eq 1 ]; then echo $port; return 0; fi
         port=$((port + 20))
@@ -46,183 +49,127 @@ find_free_port_range() {
     return 1
 }
 
-get_public_ip() {
-    curl -s --max-time 5 ifconfig.me 2>/dev/null \
-      || curl -s --max-time 5 icanhazip.com 2>/dev/null \
-      || curl -s --max-time 5 api.ipify.org 2>/dev/null \
-      || echo ""
+# ─── 获取所有 IP ───
+get_all_ips() {
+    ip -o -4 addr show 2>/dev/null | awk '{print $4}' | cut -d/ -f1
 }
 
-# 外部端口可达性验证：启动临时 HTTP 监听，用公网服务回连检测
-verify_port_reachable() {
-    local port=$1 pubip=$2
+# ─── 判断 IP 是否公网地址 ───
+is_public_ip() {
+    local ip=$1
+    # RFC1918 私有地址范围
+    if echo "$ip" | grep -qE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.|127\.|0\.)'; then return 1; fi
+    # CGNAT 范围 100.64.0.0/10
+    if echo "$ip" | grep -qE '^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.'; then return 1; fi
+    return 0
+}
 
-    log "  验证端口 $port 公网可达性..."
+# ─── 尝试获取公网可达 IP ───
+find_public_address() {
+    # 先查本地网卡是否有公网IP
+    for ip in $(get_all_ips); do
+        if is_public_ip "$ip"; then
+            log "检测到公网IP: $ip (本地网卡直连)"
+            echo "$ip"
+            return 0
+        fi
+    done
 
-    python3 -c "
-import socket, sys
-s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-s.bind(('0.0.0.0', $port))
-s.listen(1)
-s.settimeout(8)
-try:
-    conn, addr = s.accept()
-    conn.sendall(b'HTTP/1.1 200 OK\r\nContent-Length: 6\r\n\r\nPW-OK\r\n')
-    conn.close()
-except:
-    pass
-s.close()
-" & local PID=$!
+    # 本机没有公网IP，尝试用外部服务获取出口IP
+    local ext_ip=$(curl -s --max-time 5 ifconfig.me 2>/dev/null \
+        || curl -s --max-time 5 icanhazip.com 2>/dev/null \
+        || curl -s --max-time 5 api.ipify.org 2>/dev/null \
+        || echo "")
 
-    sleep 1
-
-    local reachable=1
-    # 方法1: 用 curl 的公网反射检测
-    local RESULT=$(curl -s --max-time 6 "https://portchecker.co/check" \
-        -H "Content-Type: application/x-www-form-urlencoded" \
-        -d "target=$pubip&port=$port" 2>/dev/null || true)
-    if echo "$RESULT" | grep -qi "open\|success\|reachable"; then
-        reachable=0
-    fi
-
-    # 方法2: 用另一公网服务
-    if [ $reachable -ne 0 ]; then
-        local R2=$(curl -s --max-time 6 "https://api.portcheckers.com/$pubip/$port" 2>/dev/null || true)
-        if echo "$R2" | grep -qi '"open":true\|"reachable":true'; then reachable=0; fi
-    fi
-
-    # 方法3: 用 yougetsignal 的端口检测
-    if [ $reachable -ne 0 ]; then
-        local R3=$(curl -s --max-time 8 "https://ports.yougetsignal.com/check-port.php" \
-            -d "remoteAddress=$pubip&portNumber=$port" 2>/dev/null || true)
-        if echo "$R3" | grep -qi "open"; then reachable=0; fi
-    fi
-
-    # 方法4: 用 ping.pe 做 TCP 检测
-    if [ $reachable -ne 0 ]; then
-        local R4=$(curl -s --max-time 8 "https://ping.pe/$pubip:$port" 2>/dev/null || true)
-        if echo "$R4" | grep -qi "success\|connected"; then reachable=0; fi
-    fi
-
-    kill $PID 2>/dev/null; wait $PID 2>/dev/null
-
-    if [ $reachable -eq 0 ]; then
-        log "  端口 $port ✓ 公网可达"
-        return 0
-    else
-        warn "  端口 $port ✗ 公网不可达 (NAT/防火墙可能阻止了入站连接)"
+    if [ -z "$ext_ip" ]; then
+        # 完全无法联网或只有内网
+        warn "无法获取任何公网地址"
+        warn "此机器无法作为控制机（没有公网可达 IP）"
+        warn "它只能作为子节点加入已有 SD-WAN 网络"
+        echo ""
         return 1
     fi
+
+    # 有出口IP，但本机网卡上没有——NAT
+    warn "本机网卡未绑定公网IP"
+    warn "出口IP: $ext_ip (可能是NAT/端口映射/CGNAT)"
+    warn ""
+    warn "如果这是云服务器，云厂商的安全组/防火墙规则会影响端口可达性"
+    warn "如果是 NAT VPS，请先配置端口映射后再继续"
+    echo ""
+    echo "$ext_ip"
+    return 0
 }
 
-# ─── 检测 NAT ───
-PUBLIC_IP=$(get_public_ip)
-LOCAL_IPS=$(hostname -I 2>/dev/null || ip addr show 2>/dev/null | grep 'inet ' | awk '{print $2}' | cut -d/ -f1)
-
-NAT_DETECTED=0
-if [ -z "$PUBLIC_IP" ]; then
-    PUBLIC_IP=$(echo "$LOCAL_IPS" | awk '{print $1}')
-    warn "无法获取公网IP，将使用本地IP: $PUBLIC_IP"
-    NAT_DETECTED=1
-else
-    local_is_public=0
-    for lip in $LOCAL_IPS; do
-        [ "$lip" = "$PUBLIC_IP" ] && local_is_public=1
-    done
-    if [ $local_is_public -eq 0 ]; then
-        NAT_DETECTED=1
-        warn "检测到 NAT 环境: 内网IP ≠ 公网IP ($PUBLIC_IP)"
-    else
-        log "公网IP直连: $PUBLIC_IP"
-    fi
-fi
-
-# ─── 端口分配 ───
+# ─── 开始 ───
 echo ""
-echo -e "${CYAN}═══ 端口自动检测 ═══${NC}"
+echo -e "${CYAN}══════════════════════════════════════${NC}"
+echo -e "${CYAN}  PathWeaver 控制机安装${NC}"
+echo -e "${CYAN}══════════════════════════════════════${NC}"
 echo ""
+
+log "检测网络环境..."
+PUBLIC_IP=$(find_public_address) || {
+    echo ""
+    warn "此机器是内网节点，无法直装控制机"
+    warn "请先在另一台有公网IP的机器上安装控制机"
+    warn "然后在控制机面板中为此机器生成子节点安装命令"
+    exit 1
+}
 
 log "检测可用端口..."
 
-WEB_PORT=$(find_free_port 8443 tcp)
-[ -z "$WEB_PORT" ] && { err "无可用 TCP 端口"; exit 1; }
-
-NODE_PORT=$(find_free_port $((WEB_PORT + 1)) tcp)
-[ -z "$NODE_PORT" ] && { err "无可用 TCP 端口"; exit 1; }
-
-WG_START=$(find_free_port_range 30000 50)
-[ -z "$WG_START" ] && WG_START=$(find_free_port_range 20000 50)
-[ -z "$WG_START" ] && WG_START=$(find_free_port_range 10000 50)
+WEB_PORT=$(find_free_port 8443 tcp) || { err "无可用 TCP 端口"; exit 1; }
+NODE_PORT=$(find_free_port $((WEB_PORT + 1)) tcp) || { err "无可用 TCP 端口"; exit 1; }
+WG_START=$(find_free_port_range 30000 50) || WG_START=$(find_free_port_range 20000 50)
+WG_START=${WG_START:-$(find_free_port_range 10000 50)}
 [ -z "$WG_START" ] && { err "无足够连续 UDP 端口"; exit 1; }
 WG_END=$((WG_START + 49))
 
-# ─── 端口可达性验证 ───
-echo ""
-echo -e "${CYAN}═══ 端口可达性验证 ═══${NC}"
-echo ""
-
-REACHABLE_WEB=1; REACHABLE_NODE=1
-
-if [ $NAT_DETECTED -eq 1 ] || [ -n "$PUBLIC_IP" ]; then
-    verify_port_reachable "$WEB_PORT" "$PUBLIC_IP" && REACHABLE_WEB=0
-    verify_port_reachable "$NODE_PORT" "$PUBLIC_IP" && REACHABLE_NODE=0
-else
-    log "未检测到 NAT，跳过外部可达性验证"
-fi
-
-# ─── 管理员密码 ───
-ADMIN_PASSWORD=$(head -c 12 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 14)
+ADMIN_PASSWORD=$(head -c 14 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 14)
 
 # ─── 汇总 ───
 echo ""
-echo -e "${CYAN}══════════════════════════════════${NC}"
-echo -e "${CYAN}       配置汇总${NC}"
-echo -e "${CYAN}══════════════════════════════════${NC}"
-echo -e "  公网 IP:       ${GREEN}$PUBLIC_IP${NC}"
-echo -e "  Web 端口:      ${GREEN}$WEB_PORT/TCP${NC}  $([ $REACHABLE_WEB -eq 0 ] && echo '✓ 公网可达' || echo '✗ 需确认')"
-echo -e "  节点端口:      ${GREEN}$NODE_PORT/TCP${NC}  $([ $REACHABLE_NODE -eq 0 ] && echo '✓ 公网可达' || echo '✗ 需确认')"
+echo -e "${CYAN}══════════════════════════════════════${NC}"
+echo -e "${CYAN}       安装配置确认${NC}"
+echo -e "${CYAN}══════════════════════════════════════${NC}"
+echo ""
+echo -e "  公网地址:      ${GREEN}$PUBLIC_IP${NC}"
+echo -e "  Web 管理端口:  ${GREEN}$WEB_PORT/TCP${NC}"
+echo -e "  节点服务端口:  ${GREEN}$NODE_PORT/TCP${NC}"
 echo -e "  WG 端口池:     ${GREEN}$WG_START-$WG_END/UDP${NC}"
 echo -e "  管理员密码:    ${GREEN}$ADMIN_PASSWORD${NC}"
-echo -e "${CYAN}══════════════════════════════════${NC}"
+echo ""
+echo -e "  ${YELLOW}请确认以上端口已在防火墙/安全组中放行${NC}"
+echo -e "  ${YELLOW}NAT 机器请提前配置端口映射${NC}"
 echo ""
 
-if [ $REACHABLE_WEB -ne 0 ] || [ $REACHABLE_NODE -ne 0 ]; then
-    warn "部分端口公网可达性未通过验证。"
-    warn "如果你在使用云服务器，请检查安全组/防火墙规则是否放行这些端口"
-    warn "如果使用 NAT VPS，请确保已做端口映射"
-    echo ""
-    read -rp "仍然继续安装？[Y/n] " yn
-    [ "$yn" = "n" ] || [ "$yn" = "N" ] && exit 0
-fi
+read -rp "确认继续安装？[Y/n] " yn
+[ "$yn" = "n" ] || [ "$yn" = "N" ] && exit 0
 
 # ─── 安装依赖 ───
 log "安装系统依赖..."
 if command -v apt-get &>/dev/null; then
-    apt-get update -qq && apt-get install -y -qq curl wireguard-tools nftables sqlite3 python3 netcat-openbsd
+    apt-get update -qq && apt-get install -y -qq curl wireguard-tools nftables sqlite3
 elif command -v yum &>/dev/null; then
-    yum install -y -q curl wireguard-tools nftables sqlite python3 nmap-ncat
+    yum install -y -q curl wireguard-tools nftables sqlite
 fi
 
-# ─── 下载 / 编译 ───
+# ─── 下载 ───
 INSTALL_DIR="/opt/pathweaver"
 mkdir -p "$INSTALL_DIR"/{bin,web,data}
 REPO="https://github.com/FengYuchen1314/sd-wan-plus"
 
-log "下载 PathWeaver..."
+log "安装 PathWeaver..."
 if curl -fsSL "$REPO/releases/latest/download/pathweaver-controller-$ARCH" \
     -o "$INSTALL_DIR/bin/pathweaver-controller" 2>/dev/null; then
     chmod +x "$INSTALL_DIR/bin/pathweaver-controller"
-    log "已下载预编译版本"
 else
-    warn "无预编译版本，从源码构建 (约10分钟)..."
-    command -v cargo &>/dev/null || { curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y; source "$HOME/.cargo/env"; }
+    warn "无预编译版本，从源码构建..."
+    command -v cargo &>/dev/null || { curl --proto '=https' -sSf https://sh.rustup.rs | sh -s -- -y; source "$HOME/.cargo/env"; }
     command -v node &>/dev/null || { curl -fsSL https://deb.nodesource.com/setup_20.x | bash -; apt-get install -y nodejs; }
     apt-get install -y -qq pkg-config libssl-dev protobuf-compiler 2>/dev/null || true
-
-    TMP=$(mktemp -d)
-    git clone "$REPO" "$TMP"
-    cd "$TMP"
+    TMP=$(mktemp -d); git clone "$REPO" "$TMP"; cd "$TMP"
     cd web && npm install && npm run build && cd ..
     cargo build --release -p pathweaver-controller
     cp target/release/pathweaver-controller "$INSTALL_DIR/bin/"
@@ -239,12 +186,10 @@ PW_NODE_PORT=$NODE_PORT
 PW_WG_PORT_START=$WG_START
 PW_WG_PORT_END=$WG_END
 PW_PUBLIC_ADDRESS=$PUBLIC_IP
-PW_OVERLAY_CIDR=10.250.0.0/16
 RUST_LOG=info
 EOF
 
 # ─── systemd ───
-log "创建 systemd 服务..."
 cat > /etc/systemd/system/pathweaver.service << EOF
 [Unit]
 Description=PathWeaver SD-WAN Controller
@@ -258,25 +203,25 @@ EnvironmentFile=$INSTALL_DIR/.env
 WorkingDirectory=$INSTALL_DIR
 Restart=always
 RestartSec=5
-AmbientCapabilities=CAP_NET_BIND_SERVICE
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
 # ─── 防火墙 ───
-log "配置防火墙规则..."
+log "尝试配置防火墙..."
 for tool in ufw firewall-cmd nft iptables; do
     command -v $tool &>/dev/null || continue
     case $tool in
         ufw)
-            ufw allow $WEB_PORT/tcp comment 'PW-Web' 2>/dev/null || true
-            ufw allow $NODE_PORT/tcp comment 'PW-Node' 2>/dev/null || true
-            ufw allow $WG_START:$WG_END/udp comment 'PW-WG' 2>/dev/null || true
+            ufw allow $WEB_PORT/tcp comment 'PW-Web' 2>/dev/null
+            ufw allow $NODE_PORT/tcp comment 'PW-Node' 2>/dev/null
+            ufw allow $WG_START:$WG_END/udp comment 'PW-WG' 2>/dev/null
             ;;
         firewall-cmd)
-            firewall-cmd --permanent --add-port=$WEB_PORT/tcp --add-port=$NODE_PORT/tcp --add-port=$WG_START-$WG_END/udp 2>/dev/null || true
-            firewall-cmd --reload 2>/dev/null || true
+            firewall-cmd --permanent --add-port=$WEB_PORT/tcp --add-port=$NODE_PORT/tcp \
+                --add-port=$WG_START-$WG_END/udp 2>/dev/null
+            firewall-cmd --reload 2>/dev/null
             ;;
         nft)
             nft add table inet pathweaver 2>/dev/null || true
@@ -286,16 +231,16 @@ for tool in ufw firewall-cmd nft iptables; do
             nft add rule inet pathweaver input udp dport $WG_START-$WG_END accept 2>/dev/null || true
             ;;
         iptables)
-            iptables -A INPUT -p tcp --dport $WEB_PORT -j ACCEPT 2>/dev/null || true
-            iptables -A INPUT -p tcp --dport $NODE_PORT -j ACCEPT 2>/dev/null || true
-            iptables -A INPUT -p udp --dport $WG_START:$WG_END -j ACCEPT 2>/dev/null || true
+            iptables -A INPUT -p tcp --dport $WEB_PORT -j ACCEPT 2>/dev/null
+            iptables -A INPUT -p tcp --dport $NODE_PORT -j ACCEPT 2>/dev/null
+            iptables -A INPUT -p udp --dport $WG_START:$WG_END -j ACCEPT 2>/dev/null
             ;;
     esac
     break
 done
 
 # ─── 启动 ───
-log "启动 PathWeaver..."
+log "启动服务..."
 systemctl daemon-reload
 systemctl enable pathweaver
 systemctl start pathweaver
@@ -304,18 +249,17 @@ sleep 4
 if systemctl is-active --quiet pathweaver; then
     echo ""
     echo -e "${CYAN}════════════════════════════════════════${NC}"
-    echo -e "${GREEN}         PathWeaver 安装完成！${NC}"
+    echo -e "${GREEN}     PathWeaver 安装完成${NC}"
     echo -e "${CYAN}════════════════════════════════════════${NC}"
     echo ""
-    echo -e "  ${GREEN}Web 面板:   http://$PUBLIC_IP:$WEB_PORT${NC}"
-    echo -e "  用户名:     admin"
-    echo -e "  密码:       ${GREEN}$ADMIN_PASSWORD${NC}"
+    echo -e "  ${GREEN}面板地址: http://$PUBLIC_IP:$WEB_PORT${NC}"
+    echo -e "  用户名:   admin"
+    echo -e "  密码:     ${GREEN}$ADMIN_PASSWORD${NC}"
     echo ""
-    echo -e "  ${YELLOW}⚠ 请立即保存密码并登录修改${NC}"
+    echo -e "  ${YELLOW}⚠ 请立即登录并修改密码${NC}"
+    echo -e "  ${YELLOW}⚠ 添加子节点前，在「接入新节点」页面生成安装命令${NC}"
     echo ""
-    echo "  管理:"
-    echo "    journalctl -u pathweaver -f      查看日志"
-    echo "    systemctl restart pathweaver      重启"
+    echo -e "  日志: journalctl -u pathweaver -f"
     echo -e "${CYAN}════════════════════════════════════════${NC}"
 else
     err "启动失败: journalctl -u pathweaver -n 50"
