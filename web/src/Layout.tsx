@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
-import { NavLink } from 'react-router-dom';
-import { LayoutDashboard, Share2, Server, UserPlus, FileText, RefreshCw, LogOut } from 'lucide-react';
+import { NavLink, useNavigate } from 'react-router-dom';
+import { LayoutDashboard, Share2, Server, UserPlus, FileText, RefreshCw, Settings, LogOut } from 'lucide-react';
+import { api } from './api';
 
 const nav = [
   { to: '/', icon: LayoutDashboard, label: '仪表盘' },
@@ -12,9 +13,11 @@ const nav = [
 ];
 
 export default function Layout({ children }: { children: ReactNode }) {
-  const logout = () => {
-    localStorage.removeItem('pw_token');
-    window.location.reload();
+  const navigate = useNavigate();
+
+  const logout = async () => {
+    try { await api.logout(); } catch { /* ignore */ }
+    navigate('/login', { replace: true });
   };
 
   return (
@@ -34,15 +37,28 @@ export default function Layout({ children }: { children: ReactNode }) {
               display: 'flex', alignItems: 'center', gap: 12,
               padding: '10px 20px', color: isActive ? '#38bdf8' : '#94a3b8',
               background: isActive ? 'rgba(56,189,248,0.1)' : 'transparent',
-              textDecoration: 'none', fontSize: 14, borderLeft: isActive ? '3px solid #38bdf8' : '3px solid transparent',
+              textDecoration: 'none', fontSize: 14,
+              borderLeft: isActive ? '3px solid #38bdf8' : '3px solid transparent',
             })}
           >
             <Icon size={18} /> {label}
           </NavLink>
         ))}
         <div style={{ flex: 1 }} />
+        <NavLink
+          to="/settings"
+          style={({ isActive }) => ({
+            display: 'flex', alignItems: 'center', gap: 12,
+            padding: '10px 20px', color: isActive ? '#38bdf8' : '#94a3b8',
+            background: isActive ? 'rgba(56,189,248,0.1)' : 'transparent',
+            textDecoration: 'none', fontSize: 13,
+            borderLeft: isActive ? '3px solid #38bdf8' : '3px solid transparent',
+          })}
+        >
+          <Settings size={18} /> 系统设置
+        </NavLink>
         <button onClick={logout} style={{
-          display: 'flex', alignItems: 'center', gap: 12, margin: '0 16px',
+          display: 'flex', alignItems: 'center', gap: 12, margin: '8px 16px 0',
           padding: '8px 12px', background: 'transparent', border: '1px solid #334155',
           borderRadius: 6, color: '#94a3b8', cursor: 'pointer', fontSize: 13,
         }}>
