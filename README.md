@@ -4,6 +4,31 @@
 
 **技术栈**：Go（controller / agent / netd / updater）+ Vue 3 + TypeScript 控制台。
 
+## 控制机一键安装
+
+在 Debian 12+ / Ubuntu 22.04+（x86_64 或 arm64）上执行：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh | sudo bash
+```
+
+脚本会自动：检测架构 → 下载 [Latest Release](https://github.com/FengYuchen1314/sd-wan-plus/releases/latest) 统一安装包 → 交互安装控制机。
+
+非交互示例：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh | sudo bash -s -- \
+  --public-address YOUR_PUBLIC_IP \
+  --password 'YOUR_PASSWORD' \
+  --name controller
+```
+
+安装完成后访问：`http://YOUR_PUBLIC_IP:14301`（用户名固定 `admin`）。
+
+默认端口：Web **14301**、节点服务 **14302**、WireGuard **14303–14399**。
+
+> 安装包由 GitHub Actions 在每次 push `master` 时自动编译发布；主控与子节点使用**同一包**，仅 `--role` 参数不同。
+
 ## 架构
 
 ```
@@ -20,10 +45,37 @@
 - **数据图**：WireGuard 链路，可交叉直连（图状）
 - **路径策略**：nftables + ip rule + 多路由表
 
+## 子节点接入（链式）
+
+在控制台「接入」复制命令，或在已解压的统一安装包目录执行：
+
+```bash
+sudo bash install.sh --role node \
+  --parent-url http://PARENT_IP:14302 \
+  --token ONE_TIME_TOKEN \
+  --name node-a
+```
+
+也可直接管道父节点生成的 bootstrap：
+
+```bash
+curl -fsSL "http://PARENT_IP:14302/bootstrap/install.sh?token=TOKEN" | sudo bash
+```
+
+子节点**全部文件只从父节点拉取**，不访问 GitHub、不必直连控制机。
+
+## 一键更新
+
+控制机 UI「更新中心」创建并启动：制品沿控制树预分发 → 叶子优先安装。
+
+## WireGuard
+
+见 [docs/WIREGUARD.md](docs/WIREGUARD.md)：主动端单向发起握手 + Keepalive；被动端无固定 Endpoint，由内核动态学习维护。
+
 ## 环境要求
 
 - 控制机 / 节点：Linux（Debian 12+ / Ubuntu 22.04+），systemd
-- 构建：Go 1.22+，Node.js 20+（仅构建前端）
+- 构建（可选）：Go 1.22+，Node.js 20+（仅构建前端）
 
 ## 从源码构建
 
@@ -37,6 +89,9 @@ go build -o bin/pathweaver-cli ./cmd/pathweaver-cli
 
 # 前端
 cd web && npm install && npm run build && cd ..
+
+# 打统一安装包
+bash packaging/build-package.sh
 ```
 
 Windows 开发可使用 `build.ps1`。
@@ -44,59 +99,18 @@ Windows 开发可使用 `build.ps1`。
 ## 本地开发（控制机）
 
 ```bash
-# 初始化数据库
 mkdir -p data
 set PW_DATA_DIR=./data
 set PW_PUBLIC_ADDRESS=127.0.0.1
 ./bin/pathweaver-controller --bootstrap --password 'changeme123' --name controller
 
-# 启动（另开终端可跑 netd + agent）
 set PW_STATIC_DIR=web/dist
 ./bin/pathweaver-controller
 
-# 前端热更新
 cd web && npm run dev
 ```
 
-访问 `http://127.0.0.1:14301`（或 Vite `5173`）。用户名固定 `admin`。
-
-## 快速安装（统一安装包）
-
-主控与子节点使用 **同一 Release 包**，仅安装参数不同。每次 push 到 `master` 时 GitHub Actions 自动编译并更新 [Latest Release](https://github.com/FengYuchen1314/sd-wan-plus/releases/latest)。
-
-### 控制机
-
-```bash
-# 从 Latest Release 下载对应架构的 tar.gz 后：
-tar -xzf pathweaver-*-linux-amd64.tar.gz
-cd pathweaver-*-linux-amd64
-sudo bash install.sh --role controller \
-  --public-address YOUR_PUBLIC_IP \
-  --password 'YOUR_PASSWORD'
-```
-
-默认端口：Web `14301`、节点服务 `14302`、WG `14303-14399`。
-
-### 子节点（链式，推荐）
-
-在控制台「接入」复制命令，或：
-
-```bash
-sudo bash install.sh --role node \
-  --parent-url http://PARENT_IP:14302 \
-  --token ONE_TIME_TOKEN \
-  --name node-a
-```
-
-子节点**全部文件只从父节点拉取**，不访问 GitHub、不必直连控制机。
-
-## 一键更新
-
-控制机 UI「更新中心」创建并启动：制品沿控制树预分发 → 叶子优先安装。
-
-## WireGuard
-
-见 [docs/WIREGUARD.md](docs/WIREGUARD.md)：主动端单向发起握手 + Keepalive；被动端无固定 Endpoint，由内核动态学习维护。
+访问 `http://127.0.0.1:14301`（或 Vite `5173`）。
 
 ## 环境变量
 

@@ -52,11 +52,13 @@ jobs:
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-          VERSION: ${{ github.sha }}
           FORCE_WEB_BUILD: "0"
         run: |
           chmod +x packaging/build-package.sh
           VERSION="0.1.0-${GITHUB_SHA::7}" packaging/build-package.sh
+          # Stable names for one-click install (do not change between commits)
+          cp "dist/pathweaver-"*-"${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz" \
+             "dist/pathweaver-${{ matrix.goos }}-${{ matrix.goarch }}.tar.gz"
           ls -la dist/
 
       - name: Upload workflow artifact

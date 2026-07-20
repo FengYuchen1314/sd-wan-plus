@@ -4,10 +4,16 @@
 
 ### 使用 GitHub Release 安装包（推荐）
 
-每次 push 自动发布统一包到 Releases。下载 `pathweaver-*-linux-amd64.tar.gz` 后：
+控制机一键安装：
 
 ```bash
-tar -xzf pathweaver-*-linux-amd64.tar.gz && cd pathweaver-*-linux-*
+curl -fsSL https://raw.githubusercontent.com/FengYuchen1314/sd-wan-plus/master/scripts/install-controller.sh | sudo bash
+```
+
+或手动下载 `pathweaver-linux-amd64.tar.gz` / `pathweaver-linux-arm64.tar.gz` 后：
+
+```bash
+tar -xzf pathweaver-linux-amd64.tar.gz && cd pathweaver-*
 sudo bash install.sh --role controller --public-address YOUR_IP --password 'secret'
 ```
 
