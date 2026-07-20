@@ -296,15 +296,29 @@ func corsMiddleware(next http.Handler) http.Handler {
 }
 
 func fileServer(r chi.Router, dir string) {
+	index := filepath.Join(dir, "index.html")
+	if _, err := os.Stat(index); err != nil {
+		log.Printf("WARNING: static UI missing at %s (%v) — web console will not load", index, err)
+	}
 	fs := http.FileServer(http.Dir(dir))
 	r.Get("/*", func(w http.ResponseWriter, req *http.Request) {
-		path := filepath.Join(dir, filepath.Clean(req.URL.Path))
-		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+		rel := strings.TrimPrefix(filepath.Clean(req.URL.Path), "/")
+		if rel == "." || rel == "" {
+			http.ServeFile(w, req, index)
+			return
+		}
+		full := filepath.Join(dir, rel)
+		// prevent escaping static root
+		if !strings.HasPrefix(full, filepath.Clean(dir)+string(os.PathSeparator)) && full != filepath.Clean(dir) {
+			http.Error(w, "forbidden", 403)
+			return
+		}
+		if info, err := os.Stat(full); err == nil && !info.IsDir() {
 			fs.ServeHTTP(w, req)
 			return
 		}
 		// SPA fallback
-		http.ServeFile(w, req, filepath.Join(dir, "index.html"))
+		http.ServeFile(w, req, index)
 	})
 }
 

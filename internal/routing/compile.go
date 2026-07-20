@@ -2,6 +2,7 @@ package routing
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/FengYuchen1314/sd-wan-plus/internal/core"
 	"github.com/FengYuchen1314/sd-wan-plus/internal/storage"
@@ -30,7 +31,9 @@ func Compile(db *storage.DB, generation uint64, box interface {
 	for _, n := range g.Nodes {
 		priv, err := box.Decrypt(n.WGPrivateKeyEncrypted)
 		if err != nil {
-			return nil, fmt.Errorf("decrypt wg key for %s: %w", n.ID, err)
+			// 旧节点可能存了空/损坏密钥；跳过解密错误，agent 可用本地 wg_private.key 补齐
+			log.Printf("compile: decrypt wg key for %s: %v (using empty; agent may inject local key)", n.ID, err)
+			priv = ""
 		}
 		parent := ""
 		if n.ControlParentID != nil {
